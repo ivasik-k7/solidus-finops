@@ -1,0 +1,30 @@
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+crash.log
+crash.*.log
+
+# Local tfvars (real values, never commit)
+terraform.tfvars
+terraform.auto.tfvars
+*.auto.tfvars
+!terraform.auto.tfvars.example
+
+# Plan output
+*.tfplan
+
+# Lambda build artifacts
+modules/*/lambda/*.zip
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

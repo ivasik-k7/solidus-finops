@@ -1,0 +1,247 @@
+# =============================================================================
+# Example terraform.auto.tfvars — realistic "Run"-phase values
+#
+# Copy to terraform.auto.tfvars (or set in your TFE workspace variables) and
+# tailor to your environment. Anything marked SENSITIVE should be a sensitive
+# variable in the TFE workspace, NOT committed to git.
+#
+# Defaults shown here lean conservative (7-year log retention) so they're
+# also valid for SOX / PCI / GDPR / DORA workloads. Trim log_retention_days
+# down to 365 (or less) if you don't need long retention.
+# =============================================================================
+
+# --- Identity & naming ------------------------------------------------------
+namespace   = "examplebank"
+environment = "shared"
+stack_name  = "finops"
+aws_region  = "eu-central-1"
+
+extra_tags = {
+  Project            = "finops-platform"
+  TerraformWorkspace = "finops-shared"
+}
+
+# --- Encryption -------------------------------------------------------------
+create_kms_key               = true
+kms_key_deletion_window_days = 30
+
+# --- Cost & Usage data exports ---------------------------------------------
+enable_cost_data_exports  = true
+enable_focus_export       = true
+enable_athena_workgroup   = true
+cost_data_retention_days  = 90   # then tier current versions to GLACIER_IR
+cost_data_expiration_days = 2555 # 7 years total (SOX/PCI)
+
+# --- Required tags ----------------------------------------------------------
+required_tags = [
+  { key = "CostCenter", allowed_values = [] },
+  { key = "Environment", allowed_values = ["prod", "nonprod", "dr", "sandbox"] },
+  { key = "Application", allowed_values = [] },
+  { key = "Owner", allowed_values = [] },
+  { key = "BusinessUnit", allowed_values = ["retail-banking", "investment-banking", "wealth", "corporate", "operations", "technology-shared"] },
+  { key = "DataClassification", allowed_values = ["public", "internal", "confidential", "restricted"] },
+]
+
+# --- Budgets ----------------------------------------------------------------
+budget_currency = "USD"
+
+budgets = {
+  account_monthly = {
+    scope  = "account"
+    amount = 250000
+  }
+  ec2_monthly = {
+    scope  = "service"
+    amount = 80000
+    target = { service = "Amazon Elastic Compute Cloud - Compute" }
+  }
+  rds_monthly = {
+    scope  = "service"
+    amount = 40000
+    target = { service = "Amazon Relational Database Service" }
+  }
+  s3_monthly = {
+    scope  = "service"
+    amount = 15000
+    target = { service = "Amazon Simple Storage Service" }
+  }
+  lambda_monthly = {
+    scope  = "service"
+    amount = 5000
+    target = { service = "AWS Lambda" }
+  }
+  opensearch_monthly = {
+    scope  = "service"
+    amount = 12000
+    target = { service = "Amazon OpenSearch Service" }
+  }
+  retail_banking_monthly = {
+    scope  = "tag"
+    amount = 80000
+    target = { tag_key = "BusinessUnit", tag_value = "retail-banking" }
+  }
+  investment_banking_monthly = {
+    scope  = "tag"
+    amount = 100000
+    target = { tag_key = "BusinessUnit", tag_value = "investment-banking" }
+  }
+  wealth_monthly = {
+    scope  = "tag"
+    amount = 30000
+    target = { tag_key = "BusinessUnit", tag_value = "wealth" }
+  }
+  # Example cost-category-scoped budget (requires a matching cost_categories entry):
+  # pci_monthly = {
+  #   scope  = "cost_category"
+  #   amount = 50000
+  #   target = { category_name = "RegulatoryScope", category_value = "pci" }
+  # }
+}
+
+# --- Anomaly detection ------------------------------------------------------
+enable_anomaly_detection  = true
+anomaly_min_impact_amount = 250
+anomaly_min_impact_pct    = 20
+
+# --- Cost categories (chargeback allocation as code) -----------------------
+cost_categories = {
+  BusinessUnit = {
+    default_value = "unallocated"
+    rules = [
+      {
+        value = "retail-banking"
+        rule = {
+          tags = {
+            key           = "BusinessUnit"
+            values        = ["retail-banking", "retail"]
+            match_options = ["EQUALS"]
+          }
+        }
+      },
+      {
+        value = "investment-banking"
+        rule = {
+          tags = {
+            key           = "BusinessUnit"
+            values        = ["investment-banking", "ib", "markets"]
+            match_options = ["EQUALS"]
+          }
+        }
+      },
+      {
+        value = "wealth"
+        rule = {
+          tags = {
+            key           = "BusinessUnit"
+            values        = ["wealth", "wealth-management", "private-banking"]
+            match_options = ["EQUALS"]
+          }
+        }
+      },
+      {
+        value = "technology-shared"
+        rule = {
+          tags = {
+            key           = "BusinessUnit"
+            values        = ["technology-shared", "platform", "shared-services"]
+            match_options = ["EQUALS"]
+          }
+        }
+      },
+    ]
+  }
+
+  RegulatoryScope = {
+    default_value = "none"
+    rules = [
+      {
+        value = "pci"
+        rule = {
+          tags = {
+            key           = "Compliance"
+            values        = ["pci", "pci-sox"]
+            match_options = ["EQUALS"]
+          }
+        }
+      },
+      {
+        value = "sox"
+        rule = {
+          tags = {
+            key           = "Compliance"
+            values        = ["sox", "pci-sox"]
+            match_options = ["EQUALS"]
+          }
+        }
+      },
+      {
+        value = "gdpr"
+        rule = {
+          tags = {
+            key           = "Compliance"
+            values        = ["gdpr"]
+            match_options = ["EQUALS"]
+          }
+        }
+      },
+    ]
+  }
+}
+
+# --- Optimization services --------------------------------------------------
+enable_compute_optimizer     = true
+enable_cost_optimization_hub = true
+
+# --- Idle resource cleanup (DRY RUN ON BY DEFAULT) -------------------------
+enable_idle_cleanup                = true # default false; opt in explicitly
+idle_cleanup_dry_run               = true # KEEP TRUE until you're confident
+idle_cleanup_exception_tag_key     = "FinOpsException"
+idle_cleanup_ebs_min_age_days      = 14
+idle_cleanup_snapshot_min_age_days = 90
+
+# --- Instance scheduler (OPT-IN BY TAG) ------------------------------------
+enable_instance_scheduler         = true # default false; opt in explicitly
+instance_scheduler_opt_in_tag_key = "Schedule"
+
+instance_scheduler_schedules = {
+  "office-hours-cet" = {
+    start_cron = "0 6 ? * MON-FRI *"  # 07:00 CET / 08:00 CEST
+    stop_cron  = "0 18 ? * MON-FRI *" # 19:00 CET / 20:00 CEST
+  }
+  "office-hours-est" = {
+    start_cron = "0 12 ? * MON-FRI *" # 07:00 EST / 08:00 EDT
+    stop_cron  = "0 0 ? * TUE-SAT *"  # 19:00 EST / 20:00 EDT
+  }
+  "weekends-off" = {
+    start_cron = "0 0 ? * MON *"
+    stop_cron  = "0 0 ? * SAT *"
+  }
+}
+
+# --- Savings coverage reporter ---------------------------------------------
+enable_savings_coverage_reporter = true
+savings_coverage_report_cron     = "0 9 ? * MON *"
+savings_coverage_target_pct      = 70
+
+# --- FinOps KPI emission ----------------------------------------------------
+enable_finops_metrics              = true
+finops_metrics_allocation_tag_keys = ["CostCenter", "BusinessUnit", "Application"]
+finops_metrics_aggregator_cron     = "0 7 * * ? *"
+finops_metrics_alarm_thresholds = {
+  allocation_coverage_min_pct     = 85
+  commitment_coverage_min_pct     = 70
+  commitment_utilization_min_pct  = 80
+  forecast_accuracy_max_drift_pct = 10
+}
+
+# --- Notifications ----------------------------------------------------------
+notification_emails = [
+  "finops-team@examplebank.com",
+  "cloud-platform@examplebank.com",
+]
+
+# SENSITIVE — set in TFE workspace variables, never commit:
+#   slack_webhook_url = "https://hooks.slack.com/services/..."
+#   teams_webhook_url = "https://examplebank.webhook.office.com/..."
+
+log_retention_days = 2557 # 7 years (SOX/PCI/GDPR). For non-regulated accounts, 365 is plenty.
