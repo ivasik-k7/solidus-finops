@@ -73,10 +73,16 @@ See [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) for the full walk-through
 
 ## Diagrams
 
-Two Mermaid diagrams live under [diagrams/](diagrams/) and render natively in GitHub / GitLab / VS Code:
+Architecture diagrams live under [diagrams/](diagrams/), generated with the Python [`diagrams`](https://diagrams.mingrammer.com/) library (Graphviz, real AWS icons). Source is Python, outputs are PNG + SVG, all committed:
 
-- [diagrams/framework-structure.md](diagrams/framework-structure.md) — modules grouped by FinOps Foundation Capability domain, with the events-bus flow
-- [diagrams/aws-architecture.md](diagrams/aws-architecture.md) — AWS services and how they connect, high-level
+- [diagrams/framework_structure.py](diagrams/framework_structure.py) → [framework-structure.png](diagrams/framework-structure.png) / [.svg](diagrams/framework-structure.svg) — modules grouped by FinOps Foundation Capability domain, with the events-bus flow
+- [diagrams/aws_architecture.py](diagrams/aws_architecture.py) → [aws-architecture.png](diagrams/aws-architecture.png) / [.svg](diagrams/aws-architecture.svg) — AWS services and how they connect, high-level
+
+Render locally:
+```bash
+pip install -r diagrams/requirements.txt   # plus graphviz at the OS level
+cd diagrams && python framework_structure.py && python aws_architecture.py
+```
 
 ## Deployment phases
 

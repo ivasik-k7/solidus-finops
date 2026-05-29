@@ -1,32 +1,79 @@
 # Diagrams
 
-Visual companions to the framework. Both are written in **Mermaid** so they render natively in GitHub, GitLab, VS Code, JetBrains IDEs, and most modern markdown viewers — and stay in version control alongside the code.
+Architecture diagrams generated with the Python [`diagrams`](https://diagrams.mingrammer.com/) library (Graphviz-based, real AWS icons). The source is Python — the output is PNG + SVG, committed alongside the code so they always match the framework.
 
-| Diagram | Audience | Question it answers |
+| Source script | Outputs | What it shows |
 |---|---|---|
-| [framework-structure.md](framework-structure.md) | FinOps practitioners, leadership, framework adopters | "What does this framework *do*, and how do the pieces fit together against the FinOps Foundation Capability model?" |
-| [aws-architecture.md](aws-architecture.md) | Platform engineers, security reviewers, anyone reading the Terraform | "What AWS services does this framework actually provision, and how do they connect?" |
+| [framework_structure.py](framework_structure.py) | `framework-structure.png` / `.svg` | Modules grouped by FinOps Foundation Capability domain (Understand / Quantify / Optimize / Manage / Embed) with data and event flows through the central events bus |
+| [aws_architecture.py](aws_architecture.py) | `aws-architecture.png` / `.svg` | AWS services the framework provisions, organized into Data / Analytics / Compute / Observability / Security planes, with KMS as a cross-cutting concern |
 
-## How to view
+## Prerequisites
 
-The diagrams are Mermaid code blocks inside markdown files. Three ways to render them:
+Two things must be installed:
 
-- **GitHub / GitLab**: just open the `.md` file in the web UI — it renders inline.
-- **IDE**: open in VS Code (with the Markdown All in One or Mermaid Preview extension), Cursor, or JetBrains' Markdown plugin.
-- **CLI / standalone**: copy the ` ```mermaid ` block into [mermaid.live](https://mermaid.live) for an interactive view.
+1. **Python `diagrams` package** (in this repo's `requirements.txt`):
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-## Why Mermaid (and not draw.io / Lucid / PowerPoint)
+2. **Graphviz** at the OS level (the library shells out to `dot`):
+   - macOS: `brew install graphviz`
+   - Ubuntu/Debian: `sudo apt install graphviz`
+   - Fedora/RHEL: `sudo dnf install graphviz`
+   - Windows: download from [graphviz.org/download](https://graphviz.org/download/) and add to `PATH`
 
-- **Text-based** — diffable, code-reviewable, no merge conflicts on a binary file.
-- **Versioned with the code** — diagram drift is impossible; the diagram lives in the same commit as the change that affected it.
-- **No license / no vendor lock-in** — open syntax, multiple renderers, embeddable.
-- **Re-styleable in seconds** — change the `classDef` lines to match a brand or audience.
+## Render the diagrams
+
+```bash
+cd diagrams
+python framework_structure.py
+python aws_architecture.py
+```
+
+Each script writes both a PNG (for embedding in docs) and an SVG (for crisp scaling in presentations).
+
+## Why this library
+
+- **Real AWS icons** out of the box — `S3`, `Lambda`, `Dynamodb`, `Eventbridge`, `Cloudwatch`, etc. — no manual asset wrangling.
+- **Code → image** is reproducible: the diagram is a side effect of the script, so it always matches the current intent.
+- **Text-based source**: PRs diff cleanly; reviewers can see what changed in the diagram by reading the Python.
+- **Layout is automatic** (Graphviz) so contributors don't fight with manual positioning. Tweak `direction`, `nodesep`, `ranksep`, etc. when you want to nudge the layout.
+
+## File layout
+
+```
+diagrams/
+├── README.md                      # this file
+├── requirements.txt               # diagrams package
+├── framework_structure.py         # source for framework-structure.png/svg
+├── aws_architecture.py            # source for aws-architecture.png/svg
+├── framework-structure.png        # generated; commit alongside the source
+├── framework-structure.svg        # generated; commit alongside the source
+├── aws-architecture.png           # generated
+└── aws-architecture.svg           # generated
+```
+
+PNGs and SVGs are committed so reviewers don't need to install Graphviz just to look at the diagrams. Regenerate them whenever you edit the `.py` files.
 
 ## When to add a new diagram
 
-Add one when a new view answers a question the existing diagrams don't:
-- A **module-level deep dive** (e.g. "show me the EBS two-phase lifecycle as a state machine") — use `stateDiagram-v2`.
-- A **deployment topology** when multi-account / multi-region patterns get added — use `flowchart LR` with subgraphs per account.
-- A **sequence diagram** of a specific runbook flow (e.g. anomaly → events bus → chat-notifier → owner Slack DM) — use `sequenceDiagram`.
+Each new view should answer a question the existing diagrams don't. Common candidates:
 
-Keep each file self-contained: title, one Mermaid block, and a short "how to read it" section.
+- **Module state-machine** — e.g. the EBS two-phase deletion lifecycle as a `diagrams.generic.compute` + edges. Use a state-machine-like layout (`direction="LR"`).
+- **Deployment topology** — multi-account / multi-region. Use nested `Cluster()` blocks per account.
+- **Runbook sequence** — anomaly → events bus → chat-notifier → owner Slack DM. The `diagrams` library is less ideal for sequence diagrams; consider a dedicated tool for that view.
+
+Follow the existing conventions: one Python script per diagram, both outputs (`png` + `svg`), graph/node/edge attrs at module top so they stay consistent across diagrams.
+
+## Embedding in markdown
+
+```markdown
+![FinOps Framework — Structure](diagrams/framework-structure.png)
+![AWS Architecture](diagrams/aws-architecture.png)
+```
+
+Or, for crisp scaling on GitHub:
+
+```markdown
+<img src="diagrams/framework-structure.svg" width="900" alt="FinOps Framework structure">
+```
