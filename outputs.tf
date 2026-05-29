@@ -75,34 +75,64 @@ output "budget_names" {
   value       = length(var.budgets) > 0 ? module.budgets[0].budget_names : {}
 }
 
+output "budget_action_ids" {
+  description = "Map of `<budget>-action-<idx>` → AWS Budget Action ID."
+  value       = length(var.budgets) > 0 ? module.budgets[0].budget_action_ids : {}
+}
+
+output "budget_state_table_name" {
+  description = "DynamoDB state + trend + audit-log table for budget performance tracking (null if disabled)."
+  value       = length(var.budgets) > 0 ? module.budgets[0].state_table_name : null
+}
+
+output "budget_metric_namespace" {
+  description = "CloudWatch namespace for budget KPIs (VariancePct, BurnRateDaysToBreach, BudgetAdherenceScore, ...)."
+  value       = length(var.budgets) > 0 ? module.budgets[0].metric_namespace : null
+}
+
+output "budget_ssm_prefix" {
+  description = "SSM Parameter Store prefix for aggregate budget KPI mirrors."
+  value       = length(var.budgets) > 0 ? module.budgets[0].ssm_prefix : null
+}
+
+output "budget_dashboard_name" {
+  description = "Auto-provisioned CloudWatch dashboard for the budgets module."
+  value       = length(var.budgets) > 0 ? module.budgets[0].dashboard_name : null
+}
+
+output "budget_actions_role_arn" {
+  description = "Execution role ARN used by AWS Budget Actions (null if no actions configured)."
+  value       = length(var.budgets) > 0 ? module.budgets[0].budget_actions_role_arn : null
+}
+
 output "tag_compliance_config_rule_names" {
   description = "Names of the AWS Config rules checking for required tags."
-  value       = module.tag_governance.config_rule_names
+  value       = var.enable_tag_governance ? module.tag_governance[0].config_rule_names : []
 }
 
 output "tag_drift_event_rule_name" {
   description = "EventBridge rule name capturing allocation-tag mutations (null if disabled)."
-  value       = module.tag_governance.tag_drift_event_rule_name
+  value       = var.enable_tag_governance ? module.tag_governance[0].tag_drift_event_rule_name : null
 }
 
 output "allocation_resource_group_arns" {
   description = "Map of allocation resource-group name → ARN."
-  value       = module.tag_governance.allocation_resource_group_arns
+  value       = var.enable_tag_governance ? module.tag_governance[0].allocation_resource_group_arns : {}
 }
 
 output "tag_governance_metric_namespace" {
   description = "CloudWatch namespace under which tag-governance KPIs (coverage %, untagged-cost, health score) are published."
-  value       = module.tag_governance.metric_namespace
+  value       = var.enable_tag_governance ? module.tag_governance[0].metric_namespace : null
 }
 
 output "tag_governance_ssm_prefix" {
   description = "SSM Parameter Store path prefix for tag-governance KPI mirrors."
-  value       = module.tag_governance.ssm_prefix
+  value       = var.enable_tag_governance ? module.tag_governance[0].ssm_prefix : null
 }
 
 output "mandatory_tag_keys" {
   description = "Resolved mandatory tag keys (taxonomy if provided, else required_tags)."
-  value       = module.tag_governance.mandatory_tag_keys
+  value       = var.enable_tag_governance ? module.tag_governance[0].mandatory_tag_keys : []
 }
 
 output "idle_cleanup_lambda_arns" {
@@ -161,7 +191,10 @@ output "lambda_dlq_arns" {
     var.enable_instance_scheduler ? { instance_scheduler = module.instance_scheduler[0].dlq_arn } : {},
     var.enable_savings_coverage_reporter ? { savings_coverage_reporter = module.savings_coverage_reporter[0].dlq_arn } : {},
     (var.enable_finops_metrics && var.enable_cost_data_exports && var.enable_athena_workgroup) ? { finops_metrics = module.finops_metrics[0].dlq_arn } : {},
-    module.tag_governance.untagged_cost_dlq_arn == null ? {} : { tag_governance_untagged_cost = module.tag_governance.untagged_cost_dlq_arn },
+    var.enable_tag_governance ? (
+      module.tag_governance[0].untagged_cost_dlq_arn == null ? {} : { tag_governance_untagged_cost = module.tag_governance[0].untagged_cost_dlq_arn }
+    ) : {},
+    (length(var.budgets) > 0 && var.enable_budget_performance_tracking) ? { budget_performance = module.budgets[0].performance_dlq_arn } : {},
   )
 }
 

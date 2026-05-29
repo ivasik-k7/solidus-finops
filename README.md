@@ -56,8 +56,9 @@ Most "FinOps Terraform modules" you find online are toys: one budget, one SNS to
 │   └── savings-coverage-reporter/  # RI/SP coverage Lambda
 │
 └── examples/
-    ├── production/             # Full FinOps capability stack ("Run" phase)
-    └── minimal/                # Smallest viable deployment ("Crawl" phase)
+    ├── minimal/                # Smallest viable deployment ("Crawl" phase)
+    ├── selective/              # Pick-and-choose: only the modules you want
+    └── production/             # Full FinOps capability stack ("Run" phase)
 ```
 
 ## Quick start
@@ -88,11 +89,11 @@ cd diagrams && python framework_structure.py && python aws_architecture.py
 
 The framework is designed to be adopted in stages — see [docs/PHASES.md](docs/PHASES.md) for the FinOps Foundation Crawl / Walk / Run model mapped to concrete enable-flags, plus the exit criteria for each phase.
 
-| Phase | Example | What's on |
+| Example | What's on | When to use |
 |---|---|---|
-| Crawl | [examples/minimal](examples/minimal/) | Cost data, anomaly detection, free optimization services, email-only alerts |
-| Walk | (between the two) | + cost categories, savings-coverage reporter, finops-metrics KPIs, idle-cleanup in dry-run |
-| Run | [examples/production](examples/production/) | + instance scheduler, idle-cleanup in act mode, Slack/Teams, tightened KPI alarms |
+| [examples/minimal](examples/minimal/) | Cost data, anomaly detection, free optimization services, email-only alerts | "Crawl" phase — first deployment |
+| [examples/selective](examples/selective/README.md) | **Budgets + idle-resource-cleanup + tag-governance only**, with every other module ready-to-flip | When you want to pick exactly which capabilities to deploy and leave the rest off |
+| [examples/production](examples/production/) | Full FinOps stack: all modules on, polymorphic budgets with actions, tightened KPI alarms, Slack/Teams notifications | "Run" phase — mature deployment |
 
 ## What's evolved vs. typical FinOps Terraform
 

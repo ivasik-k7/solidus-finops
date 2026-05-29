@@ -169,11 +169,22 @@ module "budgets" {
   source = "./modules/budgets"
   count  = length(var.budgets) > 0 ? 1 : 0
 
-  name_prefix      = local.name_prefix
-  events_topic_arn = local.events_topic_arn
-  currency         = var.budget_currency
-  budgets          = var.budgets
-  default_tags     = local.default_tags
+  name_prefix        = local.name_prefix
+  events_topic_arn   = local.events_topic_arn
+  currency           = var.budget_currency
+  budgets            = var.budgets
+  default_thresholds = var.budget_default_thresholds
+
+  # Performance Lambda + DDB + dashboard
+  kms_key_arn                    = local.kms_key_arn
+  log_retention_days             = var.log_retention_days
+  lambda_runtime                 = var.lambda_runtime
+  enable_performance_tracking    = var.enable_budget_performance_tracking
+  performance_schedule_cron      = var.budget_performance_schedule_cron
+  adherence_alarm_threshold      = var.budget_adherence_alarm_threshold
+  burn_rate_alarm_days_to_breach = var.budget_burn_rate_alarm_days_to_breach
+
+  default_tags = local.default_tags
 
   # Budgets with scope = "cost_category" reference a category by name+value;
   # the category must exist when the budget is created. Force the order.
@@ -213,6 +224,7 @@ module "cost_categories" {
 
 module "tag_governance" {
   source = "./modules/tag-governance"
+  count  = var.enable_tag_governance ? 1 : 0
 
   name_prefix              = local.name_prefix
   required_tags            = var.required_tags

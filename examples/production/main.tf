@@ -73,37 +73,86 @@ module "finops" {
   }
 
   # --- Budgets ---
-  budget_currency = "USD"
+  budget_currency                       = "USD"
+  enable_budget_performance_tracking    = true
+  budget_adherence_alarm_threshold      = 85
+  budget_burn_rate_alarm_days_to_breach = 7
+
   budgets = {
     account_monthly = {
-      scope  = "account"
-      amount = 250000
+      scope    = "account"
+      amount   = 250000
+      owner    = "finops@example.com"
+      approver = "cfo@example.com"
+      purpose  = "Top-line account cap; FY26"
+      thresholds = [
+        { pct = 60, type = "ACTUAL" },
+        { pct = 80, type = "ACTUAL" },
+        { pct = 100, type = "ACTUAL" },
+        { pct = 100, type = "FORECASTED" },
+      ]
+    }
+    account_quarterly = {
+      scope     = "account"
+      amount    = 750000
+      time_unit = "QUARTERLY"
+      owner     = "finops@example.com"
+      purpose   = "Quarterly board reporting line"
     }
     ec2_monthly = {
       scope  = "service"
       amount = 80000
       target = { service = "Amazon Elastic Compute Cloud - Compute" }
+      owner  = "platform@example.com"
     }
     rds_monthly = {
       scope  = "service"
       amount = 40000
       target = { service = "Amazon Relational Database Service" }
+      owner  = "data-platform@example.com"
     }
     s3_monthly = {
       scope  = "service"
       amount = 15000
       target = { service = "Amazon Simple Storage Service" }
+      owner  = "platform@example.com"
     }
     retail_banking_monthly = {
       scope  = "tag"
       amount = 80000
       target = { tag_key = "BusinessUnit", tag_value = "retail-banking" }
+      owner  = "retail-banking-finops@example.com"
+      extra_notification_emails = ["retail-banking-leadership@example.com"]
     }
     investment_banking_monthly = {
       scope  = "tag"
       amount = 100000
       target = { tag_key = "BusinessUnit", tag_value = "investment-banking" }
+      owner  = "investment-banking-finops@example.com"
     }
+    # Example: a budget with auto-enforcement via AWS Budget Actions.
+    # When this budget breaches 100% (actual), AWS applies a deny-all IAM
+    # policy to a sandbox-team IAM group, freezing new resource creation
+    # until a human approves. APPROVAL_MODEL = MANUAL means an explicit
+    # human approval is still required to execute.
+    # Uncomment + adjust ARNs before enabling.
+    #
+    # sandbox_monthly = {
+    #   scope    = "tag"
+    #   amount   = 5000
+    #   target   = { tag_key = "Environment", tag_value = "sandbox" }
+    #   owner    = "platform@example.com"
+    #   actions = [
+    #     {
+    #       threshold_pct  = 100
+    #       action_type    = "APPLY_IAM_POLICY"
+    #       approval_model = "MANUAL"
+    #       iam_policy_arn = "arn:aws:iam::123456789012:policy/DenyAllExceptRead"
+    #       iam_groups     = ["sandbox-developers"]
+    #       subscribers    = ["sandbox-leads@example.com"]
+    #     }
+    #   ]
+    # }
   }
 
   # --- Anomaly detection ---
