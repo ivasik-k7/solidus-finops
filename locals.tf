@@ -11,11 +11,16 @@ data "aws_region" "current" {}
 locals {
   account_id = data.aws_caller_identity.current.account_id
   partition  = data.aws_partition.current.partition
-  region     = data.aws_region.current.name
+  region     = data.aws_region.current.region
 
   # Naming convention: <namespace>-<environment>-<stack_name>-<purpose>
   # Keep this consistent across modules.
   name_prefix = "${var.namespace}-${var.environment}-${var.stack_name}"
+
+  # Framework-wide region reach. Modules with a per-module *_scan_regions
+  # variable that's left empty fall back to this list. Modules that override
+  # their scan_regions ignore it.
+  effective_regions = concat([var.aws_primary_region], var.aws_secondary_regions)
 
   # Default tags applied to EVERY resource via provider default_tags.
   # The framework also flows these to module-level resources for safety
@@ -42,7 +47,7 @@ locals {
   # Resolved cost-data bucket name. Defaults to <name_prefix>-cost-data-<account_id>
   # to avoid collisions across accounts.
   cost_data_bucket_name = coalesce(
-    var.cost_data_bucket_name,
+    var.cost_data_exports_bucket_name,
     "${local.name_prefix}-cost-data-${local.account_id}"
   )
 

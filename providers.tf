@@ -5,10 +5,10 @@
 #   AWS_ACCESS_KEY_ID         (or assumed-role via dynamic credentials)
 #   AWS_SECRET_ACCESS_KEY     (or assumed-role via dynamic credentials)
 #   AWS_SESSION_TOKEN         (if using temporary credentials)
-#   AWS_DEFAULT_REGION        (or set var.aws_region)
+#   AWS_DEFAULT_REGION        (or set var.aws_primary_region)
 
 provider "aws" {
-  region = var.aws_region
+  region = var.aws_primary_region
 
   # Default tags applied to every resource the provider creates.
   # The framework's locals.tf computes the full tag set; we surface it here so

@@ -15,11 +15,7 @@ Usage:
 from diagrams import Diagram, Cluster, Edge
 from diagrams.aws.analytics import Athena, Glue
 from diagrams.aws.compute import Lambda
-from diagrams.aws.cost import (
-    Budgets,
-    CostExplorer,
-    ReservedInstanceReporting,
-)
+from diagrams.aws.cost import Budgets
 from diagrams.aws.integration import SNS
 from diagrams.aws.management import Cloudwatch, Config, SystemsManagerParameterStore
 from diagrams.aws.security import IAM
@@ -62,24 +58,18 @@ def main() -> None:
             m_athena = Athena("Athena workgroup +\nnamed queries")
             m_glue = Glue("Glue catalog +\ncrawler")
             m_tag = Config("tag-governance\nrequired tags + drift")
-            m_anom = CostExplorer("anomaly-detection")
 
         with Cluster("💰  QUANTIFY — business value"):
-            m_budgets = Budgets("budgets\naccount / service /\ntag / cost_category")
+            m_budgets = Budgets("budgets\naccount / service /\ntag / cost_category\n+ Budget Actions")
             m_kpi = Cloudwatch("finops-metrics\nallocation% • coverage%\nutilization% • forecast")
 
         with Cluster("⚡  OPTIMIZE — usage &amp; cost"):
             m_idle = Lambda("idle-resource-cleanup\nEBS • EIP • Snapshot\nNAT • ENI • LB")
-            m_sched = Lambda("instance-scheduler\ntag-driven")
-            m_cov = ReservedInstanceReporting("savings-coverage-reporter")
-            m_opt = CostExplorer("optimization-services\nCompute Optimizer +\nCost Optimization Hub")
+            m_sched = Lambda("instance-scheduler\ntag-driven\n+ weekly discovery")
 
         with Cluster("🛠️  MANAGE — FinOps practice"):
-            m_alert = SNS("alerting\nchat-notifier Lambda")
+            m_alert = SNS("alerting\nmulti-channel dispatcher\n(Slack/Teams/PD/email/SQS)")
             m_policy = IAM("tag-governance\npolicy guardrails")
-
-        with Cluster("🤝  EMBED — chargeback"):
-            m_cc = CostExplorer("cost-categories\nallocation as code")
 
         # =========================================================
         # Central events bus
@@ -91,10 +81,10 @@ def main() -> None:
         # =========================================================
         with Cluster("Sinks"):
             sink_email = Users("Email subs")
-            sink_chat = Users("Slack / Teams")
+            sink_chat = Users("Slack / Teams /\nPagerDuty / Opsgenie")
             sink_dash = Cloudwatch("CloudWatch\ndashboards")
             sink_ssm = SystemsManagerParameterStore("SSM Parameter Store\n(cross-workspace KPI mirror)")
-            sink_bi = Users("BI tool\n(QuickSight /\nPowerBI / Looker)")
+            sink_bi = Users("BI / FinOps tool\n(Cloudability / QuickSight /\nPowerBI / Looker)")
 
         # =========================================================
         # Data dependencies (solid)
@@ -105,20 +95,15 @@ def main() -> None:
         m_athena >> Edge(label="SQL", color="navy") >> m_idle
         m_athena >> Edge(label="SQL", color="navy") >> m_tag
         m_athena >> Edge(label="query", style="dashed", color="navy") >> sink_bi
-        m_cc >> Edge(label="category dim", color="navy") >> m_kpi
-        m_cc >> Edge(label="category dim", color="navy") >> m_budgets
 
         # =========================================================
         # Event flows into the bus (red)
         # =========================================================
-        m_budgets >> Edge(label="threshold breach", color="firebrick") >> events_bus
-        m_anom >> Edge(label="anomaly", color="firebrick") >> events_bus
+        m_budgets >> Edge(label="threshold breach +\naction firings", color="firebrick") >> events_bus
         m_tag >> Edge(label="non-compliance +\ndrift", color="firebrick") >> events_bus
         m_idle >> Edge(label="digests +\naging alarms", color="firebrick") >> events_bus
-        m_sched >> Edge(label="start/stop events", color="firebrick") >> events_bus
-        m_cov >> Edge(label="weekly report", color="firebrick") >> events_bus
+        m_sched >> Edge(label="start/stop events +\nDLQ depth alarms", color="firebrick") >> events_bus
         m_kpi >> Edge(label="KPI threshold\nalarms", color="firebrick") >> events_bus
-        m_opt >> Edge(label="recommendations", color="firebrick", style="dashed") >> events_bus
 
         # =========================================================
         # Bus fan-out
@@ -133,9 +118,12 @@ def main() -> None:
         m_kpi >> Edge(style="dashed", color="gray") >> sink_dash
         m_tag >> Edge(style="dashed", color="gray") >> sink_dash
         m_idle >> Edge(style="dashed", color="gray") >> sink_dash
+        m_sched >> Edge(style="dashed", color="gray") >> sink_dash
+        m_budgets >> Edge(style="dashed", color="gray") >> sink_dash
         m_kpi >> Edge(style="dashed", color="gray") >> sink_ssm
         m_tag >> Edge(style="dashed", color="gray") >> sink_ssm
         m_idle >> Edge(style="dashed", color="gray") >> sink_ssm
+        m_budgets >> Edge(style="dashed", color="gray") >> sink_ssm
 
 
 if __name__ == "__main__":

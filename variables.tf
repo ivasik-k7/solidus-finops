@@ -1,5 +1,32 @@
 ###############################################################################
-# Identity & naming
+# FinOps framework — root input contract
+#
+# Naming convention (strict): every variable that configures a specific
+# submodule is prefixed with that submodule's slug, e.g. cost_data_exports_*,
+# instance_scheduler_*, tag_governance_*. Only truly cross-cutting concerns
+# (namespace, environment, KMS, log retention, Lambda runtime, region) are
+# un-prefixed.
+#
+# Boolean toggles use the suffix form `<module>_enabled = true|false`
+# (NOT the legacy `enable_<module>`). This keeps every module's settings
+# grouped together when the variables.tf is alphabetised or sorted.
+#
+# Sections, in deployment order:
+#   1. Identity & naming
+#   2. Tagging defaults
+#   3. Encryption
+#   4. Observability (log retention, Lambda runtime)
+#   5. Alerting (the events bus — first to deploy)
+#   6. Cost data exports
+#   7. Tag governance
+#   8. Budgets
+#   9. Idle resource cleanup
+#  10. Instance scheduler
+#  11. FinOps metrics
+###############################################################################
+
+###############################################################################
+# 1. Identity & naming — cross-cutting, no module prefix
 ###############################################################################
 
 variable "namespace" {
@@ -34,19 +61,47 @@ variable "stack_name" {
   }
 }
 
-variable "aws_region" {
-  description = "Primary AWS region for FinOps resources. CUR is always created in us-east-1 via a provider alias."
+variable "aws_primary_region" {
+  description = "Home region for the FinOps stack. KMS key, DynamoDB tables, Lambdas, alarms, dashboards, and the events SNS topic are all created here. CUR is always created in us-east-1 via a separate provider alias regardless of this value."
   type        = string
   default     = "eu-central-1"
 
   validation {
-    condition     = can(regex("^[a-z]{2}-[a-z]+-\\d$", var.aws_region))
-    error_message = "aws_region must be a valid AWS region code (e.g. eu-central-1, us-east-1)."
+    condition     = can(regex("^[a-z]{2}-[a-z]+-\\d$", var.aws_primary_region))
+    error_message = "aws_primary_region must be a valid AWS region code (e.g. eu-central-1, us-east-1)."
+  }
+}
+
+variable "aws_secondary_regions" {
+  description = <<-EOT
+    Additional regions where scanning modules (idle-resource-cleanup,
+    instance-scheduler) iterate to find resources. Framework infrastructure
+    itself stays in aws_primary_region.
+
+    The framework computes `effective_regions = [primary] + secondaries` and
+    uses it as the default for any per-module *_scan_regions variable that
+    is left empty. Per-module scan_regions, when non-empty, override this
+    default for that module only.
+
+    Example:
+      aws_primary_region    = "eu-central-1"
+      aws_secondary_regions = ["us-east-1", "ap-southeast-1"]
+
+      # idle-cleanup + instance-scheduler scan all 3 regions by default.
+      # To scan only one region for one module, override:
+      # idle_cleanup_scan_regions = ["eu-central-1"]
+  EOT
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for r in var.aws_secondary_regions : can(regex("^[a-z]{2}-[a-z]+-\\d$", r))])
+    error_message = "Every entry in aws_secondary_regions must be a valid AWS region code (e.g. us-east-1, ap-southeast-1)."
   }
 }
 
 ###############################################################################
-# Tagging
+# 2. Tagging defaults
 ###############################################################################
 
 variable "extra_tags" {
@@ -56,7 +111,7 @@ variable "extra_tags" {
 }
 
 ###############################################################################
-# Encryption
+# 3. Encryption
 ###############################################################################
 
 variable "create_kms_key" {
@@ -88,60 +143,258 @@ variable "kms_key_deletion_window_days" {
 }
 
 ###############################################################################
-# Cost & Usage data exports
+# 4. Observability — shared across every Lambda the framework deploys
 ###############################################################################
 
-variable "enable_cost_data_exports" {
+variable "log_retention_days" {
+  description = "CloudWatch log retention for all FinOps Lambda log groups. Default 365 (1y) suits most accounts. Set to 2557 (7y) for SOX/PCI/GDPR-regulated workloads, or 1827 (5y) for DORA."
+  type        = number
+  default     = 365
+
+  validation {
+    condition     = contains([0, 1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653], var.log_retention_days)
+    error_message = "log_retention_days must be a valid CloudWatch retention value (0,1,3,5,7,14,30,60,90,120,150,180,365,400,545,731,1096,1827,2192,2557,2922,3288,3653)."
+  }
+}
+
+variable "lambda_runtime" {
+  description = "Python runtime applied to every Lambda the framework deploys. Bump in lockstep with AWS Lambda runtime deprecation announcements."
+  type        = string
+  default     = "python3.12"
+
+  validation {
+    condition     = can(regex("^python3\\.(1[0-9]|2[0-9])$", var.lambda_runtime))
+    error_message = "lambda_runtime must be a supported Python runtime (python3.10 .. python3.29)."
+  }
+}
+
+###############################################################################
+# 5. Alerting — the events bus + multi-channel dispatcher.
+#
+# Deploys unconditionally; this is the spine every other module publishes to.
+# Channels are opt-in: with no channels configured the dispatcher is a no-op
+# and downstream modules still emit metrics + DDB audit rows.
+###############################################################################
+
+variable "alerting_channels" {
+  description = <<-EOT
+    Multi-channel destination configuration for the alerting module. Each
+    channel type holds 0+ destinations, each with a min_severity filter
+    (info / low / medium / high / critical).
+
+    Leave empty to use the legacy alerting_legacy_emails / alerting_slack_webhook_url /
+    alerting_teams_webhook_url variables. See modules/alerting/README.md for the full
+    schema (PagerDuty, Opsgenie, generic webhooks, SQS).
+  EOT
+  type = object({
+    email = optional(list(object({
+      addresses    = list(string)
+      min_severity = optional(string, "info")
+    })), [])
+    slack = optional(list(object({
+      webhook_url        = optional(string)
+      webhook_secret_arn = optional(string)
+      label              = optional(string, "slack")
+      min_severity       = optional(string, "info")
+    })), [])
+    teams = optional(list(object({
+      webhook_url        = optional(string)
+      webhook_secret_arn = optional(string)
+      label              = optional(string, "teams")
+      min_severity       = optional(string, "info")
+    })), [])
+    pagerduty = optional(list(object({
+      integration_key            = optional(string)
+      integration_key_secret_arn = optional(string)
+      label                      = optional(string, "pagerduty")
+      min_severity               = optional(string, "high")
+    })), [])
+    opsgenie = optional(list(object({
+      api_key            = optional(string)
+      api_key_secret_arn = optional(string)
+      label              = optional(string, "opsgenie")
+      eu_region          = optional(bool, false)
+      min_severity       = optional(string, "high")
+    })), [])
+    generic_webhooks = optional(list(object({
+      url            = optional(string)
+      url_secret_arn = optional(string)
+      label          = string
+      headers        = optional(map(string), {})
+      min_severity   = optional(string, "info")
+    })), [])
+    sqs = optional(list(object({
+      queue_arn    = string
+      label        = optional(string, "sqs")
+      min_severity = optional(string, "info")
+    })), [])
+  })
+  default = {}
+}
+
+variable "alerting_deduplication" {
+  description = "Deduplication settings for the alerting dispatcher."
+  type = object({
+    enabled            = optional(bool, true)
+    window_minutes     = optional(number, 60)
+    fingerprint_fields = optional(list(string), ["AlertName", "severity", "ResourceId"])
+  })
+  default = {}
+}
+
+variable "alerting_audit_log" {
+  description = "Audit log settings for the alerting dispatcher."
+  type = object({
+    enabled        = optional(bool, true)
+    retention_days = optional(number, 365)
+  })
+  default = {}
+}
+
+variable "alerting_legacy_emails" {
+  description = "Legacy: SNS email subscribers. Prefer alerting_channels.email for fine-grained control. Wired through only when alerting_channels is empty."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for e in var.alerting_legacy_emails : can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", e))
+    ])
+    error_message = "alerting_legacy_emails must contain valid email addresses."
+  }
+}
+
+variable "alerting_slack_webhook_url" {
+  description = "Slack incoming webhook URL (legacy single-channel input). Null disables the Slack notifier. SENSITIVE — set as a sensitive variable in TFE, never commit. Prefer alerting_channels.slack."
+  type        = string
+  default     = null
+  sensitive   = true
+}
+
+variable "alerting_teams_webhook_url" {
+  description = "Microsoft Teams incoming webhook URL (legacy single-channel input). Null disables the Teams notifier. SENSITIVE. Prefer alerting_channels.teams."
+  type        = string
+  default     = null
+  sensitive   = true
+}
+
+###############################################################################
+# 6. Cost data exports — CUR 2.0, optional FOCUS, optional Athena + queries.
+###############################################################################
+
+variable "cost_data_exports_enabled" {
   description = "Provision the cost-data-exports module (CUR 2.0 export, S3 bucket, optionally FOCUS + Athena)."
   type        = bool
   default     = true
 }
 
-variable "enable_focus_export" {
+variable "cost_data_exports_focus_enabled" {
   description = "Emit FOCUS 1.0 export alongside CUR. Recommended for multi-cloud reporting or future-proofing."
   type        = bool
   default     = true
 }
 
-variable "enable_athena_workgroup" {
+variable "cost_data_exports_athena_enabled" {
   description = "Provision an Athena workgroup, Glue database, and KMS-encrypted results bucket for CUR/FOCUS querying."
   type        = bool
   default     = true
 }
 
-variable "cost_data_bucket_name" {
+variable "cost_data_exports_bucket_name" {
   description = "Override the S3 bucket name for cost-data exports. If null, derived as <name_prefix>-cost-data-<account_id>."
   type        = string
   default     = null
 }
 
-variable "cost_data_retention_days" {
+variable "cost_data_exports_retention_days" {
   description = "Days to keep current CUR/FOCUS objects in S3 Standard before tiering to Glacier Instant Retrieval (still Athena-queryable). 0 disables tiering."
   type        = number
   default     = 90
 
   validation {
-    condition     = var.cost_data_retention_days >= 0
-    error_message = "cost_data_retention_days must be >= 0."
+    condition     = var.cost_data_exports_retention_days >= 0
+    error_message = "cost_data_exports_retention_days must be >= 0."
   }
 }
 
-variable "cost_data_expiration_days" {
-  description = "Total retention (days) for current cost-data objects before they expire. Banks: 2555 (7 years) for SOX/PCI. Must be >= cost_data_retention_days."
+variable "cost_data_exports_expiration_days" {
+  description = "Total retention (days) for current cost-data objects before they expire. Banks: 2555 (7 years) for SOX/PCI. Must be >= cost_data_exports_retention_days."
   type        = number
   default     = 2555
 
   validation {
-    condition     = var.cost_data_expiration_days >= 1
-    error_message = "cost_data_expiration_days must be >= 1."
+    condition     = var.cost_data_exports_expiration_days >= 1
+    error_message = "cost_data_exports_expiration_days must be >= 1."
   }
 }
 
+variable "cost_data_exports_cross_account_readers" {
+  description = <<-EOT
+    Cross-account IAM roles for 3rd-party FinOps tools (Cloudability, CloudHealth,
+    Vantage, Apptio, ...) to assume and read the CUR bucket.
+
+    Example for Cloudability:
+      cost_data_exports_cross_account_readers = [{
+        name          = "cloudability"
+        account_id    = "165761016623"          # Cloudability's account
+        external_id   = var.cloudability_external_id
+        enable_athena = false
+      }]
+  EOT
+  type = list(object({
+    name          = string
+    account_id    = string
+    external_id   = optional(string, null)
+    role_name     = optional(string, null)
+    enable_athena = optional(bool, false)
+  }))
+  default = []
+}
+
+variable "cost_data_exports_health_check_enabled" {
+  description = "Deploy the daily health-check Lambda for the cost-data pipeline (CUR freshness + crawler success + Athena queryability)."
+  type        = bool
+  default     = true
+}
+
+variable "cost_data_exports_health_check_cron" {
+  description = "EventBridge cron expression (UTC, six fields) for the cost-data health check."
+  type        = string
+  default     = "0 9 * * ? *"
+}
+
+variable "cost_data_exports_cur_freshness_alarm_hours" {
+  description = "Alarm if the newest CUR delivery is older than this many hours. Null disables."
+  type        = number
+  default     = 36
+}
+
+variable "cost_data_exports_named_queries_enabled" {
+  description = "Register the pre-built FinOps Athena named-queries library in the workgroup."
+  type        = bool
+  default     = true
+}
+
+variable "cost_data_exports_extra_named_queries" {
+  description = "Additional Athena named queries to register alongside the built-in library."
+  type = map(object({
+    description = string
+    query       = string
+  }))
+  default = {}
+}
+
 ###############################################################################
-# Tag governance
+# 7. Tag governance — Config rules, taxonomy, drift detection, untagged-cost
 ###############################################################################
 
-variable "required_tags" {
+variable "tag_governance_enabled" {
+  description = "Deploy the tag-governance module (Config rules + tag drift detection + optional untagged-cost report + Allocation Resource Groups). Set false to skip entirely."
+  type        = bool
+  default     = true
+}
+
+variable "tag_governance_required_tags" {
   description = <<-EOT
     Tags that must be present on resources. Each entry:
       { key = string, allowed_values = list(string) }
@@ -162,18 +415,11 @@ variable "required_tags" {
   ]
 
   validation {
-    # AWS tag keys: letters, digits, spaces, and + - = . _ : / @
     condition = alltrue([
-      for t in var.required_tags : can(regex("^[a-zA-Z0-9 +\\-=._:/@]{1,128}$", t.key))
+      for t in var.tag_governance_required_tags : can(regex("^[a-zA-Z0-9 +\\-=._:/@]{1,128}$", t.key))
     ])
-    error_message = "required_tags keys must be valid AWS tag keys (1-128 chars: letters, digits, spaces, and + - = . _ : / @)."
+    error_message = "tag_governance_required_tags keys must be valid AWS tag keys (1-128 chars: letters, digits, spaces, and + - = . _ : / @)."
   }
-}
-
-variable "enable_tag_governance" {
-  description = "Deploy the tag-governance module (Config rules + tag drift detection + optional untagged-cost report + Allocation Resource Groups). Set false to skip entirely."
-  type        = bool
-  default     = true
 }
 
 variable "tag_governance_record_global_resources" {
@@ -182,12 +428,12 @@ variable "tag_governance_record_global_resources" {
   default     = true
 }
 
-variable "tag_taxonomy" {
+variable "tag_governance_taxonomy" {
   description = <<-EOT
     Rich metadata per tag key (optional). When supplied, drives the
     untagged-cost report's mandatory list (level = "mandatory" entries) and
     is rendered in the module's documentation outputs. The Config rule is
-    still driven by required_tags.
+    still driven by tag_governance_required_tags.
   EOT
   type = map(object({
     level       = string
@@ -199,52 +445,52 @@ variable "tag_taxonomy" {
 
   validation {
     condition = alltrue([
-      for k, v in var.tag_taxonomy :
+      for k, v in var.tag_governance_taxonomy :
       contains(["mandatory", "recommended", "operational"], v.level)
     ])
-    error_message = "tag_taxonomy[*].level must be one of: mandatory, recommended, operational."
+    error_message = "tag_governance_taxonomy[*].level must be one of: mandatory, recommended, operational."
   }
 
   validation {
     condition = alltrue([
-      for k, v in var.tag_taxonomy :
+      for k, v in var.tag_governance_taxonomy :
       contains(["allocation", "compliance", "operational", "lifecycle"], v.purpose)
     ])
-    error_message = "tag_taxonomy[*].purpose must be one of: allocation, compliance, operational, lifecycle."
+    error_message = "tag_governance_taxonomy[*].purpose must be one of: allocation, compliance, operational, lifecycle."
   }
 }
 
-variable "enable_tag_drift_detection" {
+variable "tag_governance_drift_detection_enabled" {
   description = "Audit mutations of allocation-critical tag keys to the events bus."
   type        = bool
   default     = true
 }
 
-variable "tag_drift_watched_keys" {
+variable "tag_governance_drift_watched_keys" {
   description = "Tag keys whose mutations emit an audit event. Default covers the standard FinOps allocation set."
   type        = list(string)
   default     = ["CostCenter", "BusinessUnit", "Application"]
 }
 
-variable "enable_untagged_cost_report" {
-  description = "Deploy a weekly Lambda that dollarizes the tag gap. Requires enable_cost_data_exports + enable_athena_workgroup."
+variable "tag_governance_untagged_cost_report_enabled" {
+  description = "Deploy a weekly Lambda that dollarizes the tag gap. Requires cost_data_exports_enabled + cost_data_exports_athena_enabled."
   type        = bool
   default     = false
 }
 
-variable "untagged_cost_report_cron" {
+variable "tag_governance_untagged_cost_report_cron" {
   description = "EventBridge cron expression (UTC, six fields) for the untagged-cost report."
   type        = string
   default     = "0 8 ? * MON *"
 }
 
-variable "untagged_cost_alarm_threshold_usd" {
+variable "tag_governance_untagged_cost_alarm_threshold_usd" {
   description = "Alarm if the total monthly untagged-cost gap exceeds this value. Null disables the alarm."
   type        = number
   default     = 1000
 }
 
-variable "allocation_resource_groups" {
+variable "tag_governance_allocation_resource_groups" {
   description = <<-EOT
     Map of resource-group key → { tag_key, tag_values } to provision as
     aws_resourcegroups_group resources. Lets the AWS Console filter by
@@ -257,7 +503,7 @@ variable "allocation_resource_groups" {
   default = {}
 }
 
-variable "tag_compliance_resource_types" {
+variable "tag_governance_compliance_resource_types" {
   description = "AWS::Service::Resource type strings that the required-tags Config rule evaluates."
   type        = list(string)
   default = [
@@ -274,13 +520,21 @@ variable "tag_compliance_resource_types" {
 }
 
 ###############################################################################
-# Budgets
-#
-# A single polymorphic map. Each entry is one budget; absence means none.
-# Scope discriminator drives the cost_filter generated by the module.
+# 8. Budgets — polymorphic map of budget definitions + performance tracking
 ###############################################################################
 
-variable "budget_default_thresholds" {
+variable "budgets_currency" {
+  description = "ISO 4217 currency code applied to all budgets (e.g. USD, EUR, GBP)."
+  type        = string
+  default     = "USD"
+
+  validation {
+    condition     = can(regex("^[A-Z]{3}$", var.budgets_currency))
+    error_message = "budgets_currency must be a 3-letter ISO 4217 code (uppercase)."
+  }
+}
+
+variable "budgets_default_thresholds" {
   description = "Threshold ladder applied to any budget that doesn't specify its own (passed through to the budgets module)."
   type = list(object({
     pct  = number
@@ -294,52 +548,41 @@ variable "budget_default_thresholds" {
   ]
 }
 
-variable "enable_budget_performance_tracking" {
+variable "budgets_performance_tracking_enabled" {
   description = "Deploy the daily budget-performance Lambda (variance, burn-rate, adherence score, anomaly correlation, dashboard)."
   type        = bool
   default     = true
 }
 
-variable "budget_performance_schedule_cron" {
+variable "budgets_performance_schedule_cron" {
   description = "EventBridge cron (UTC, six fields) for the budget-performance Lambda."
   type        = string
   default     = "0 7 * * ? *"
 }
 
-variable "budget_adherence_alarm_threshold" {
+variable "budgets_adherence_alarm_threshold" {
   description = "Alarm if BudgetAdherenceScore (% of budgets within target) drops below this. Null disables."
   type        = number
   default     = 80
 }
 
-variable "budget_burn_rate_alarm_days_to_breach" {
+variable "budgets_burn_rate_alarm_days_to_breach" {
   description = "Alarm if any single budget's BurnRateDaysToBreach metric drops below this. Null disables. (Applied as a metric-math alarm on the lowest of all per-budget series.)"
   type        = number
   default     = 7
 }
 
-variable "budget_currency" {
-  description = "ISO 4217 currency code applied to all budgets (e.g. USD, EUR, GBP)."
-  type        = string
-  default     = "USD"
-
-  validation {
-    condition     = can(regex("^[A-Z]{3}$", var.budget_currency))
-    error_message = "budget_currency must be a 3-letter ISO 4217 code (uppercase)."
-  }
-}
-
-variable "budgets" {
+variable "budgets_items" {
   description = <<-EOT
     Polymorphic budget definitions, keyed by stable identifier.
 
     Required per entry:
       scope  = "account" | "service" | "tag" | "cost_category"
-      amount = number   # limit, in budget_currency unless overridden
+      amount = number   # limit, in budgets_currency unless overridden
 
     Optional period + currency overrides:
       time_unit = "MONTHLY" | "QUARTERLY" | "ANNUALLY"   (default MONTHLY)
-      currency  = ISO 4217 code; overrides budget_currency for this budget only
+      currency  = ISO 4217 code; overrides budgets_currency for this budget only
 
     Filter target (required for non-account scope):
       service:        { service        = "Amazon EC2 - Compute" }
@@ -396,20 +639,20 @@ variable "budgets" {
     })), [])
     extra_notification_emails = optional(list(string), [])
     actions = optional(list(object({
-      threshold_pct     = number
-      notification_type = optional(string, "ACTUAL")
-      action_type       = string
-      approval_model    = optional(string, "MANUAL")
-      iam_policy_arn    = optional(string)
-      iam_roles         = optional(list(string), [])
-      iam_groups        = optional(list(string), [])
-      iam_users         = optional(list(string), [])
-      scp_policy_id     = optional(string)
-      scp_target_ids    = optional(list(string), [])
+      threshold_pct      = number
+      notification_type  = optional(string, "ACTUAL")
+      action_type        = string
+      approval_model     = optional(string, "MANUAL")
+      iam_policy_arn     = optional(string)
+      iam_roles          = optional(list(string), [])
+      iam_groups         = optional(list(string), [])
+      iam_users          = optional(list(string), [])
+      scp_policy_id      = optional(string)
+      scp_target_ids     = optional(list(string), [])
       ssm_action_subtype = optional(string)
-      ssm_region        = optional(string)
-      ssm_instance_ids  = optional(list(string), [])
-      subscribers       = optional(list(string), [])
+      ssm_region         = optional(string)
+      ssm_instance_ids   = optional(list(string), [])
+      subscribers        = optional(list(string), [])
     })), [])
     owner       = optional(string, "(unowned)")
     approver    = optional(string, "")
@@ -420,33 +663,33 @@ variable "budgets" {
 
   validation {
     condition = alltrue([
-      for k, v in var.budgets : contains(["account", "service", "tag", "cost_category"], v.scope)
+      for k, v in var.budgets_items : contains(["account", "service", "tag", "cost_category"], v.scope)
     ])
-    error_message = "Each budgets entry's scope must be one of: account, service, tag, cost_category."
+    error_message = "Each budgets_items entry's scope must be one of: account, service, tag, cost_category."
   }
 
   validation {
     condition = alltrue([
-      for k, v in var.budgets : contains(["MONTHLY", "QUARTERLY", "ANNUALLY"], v.time_unit)
+      for k, v in var.budgets_items : contains(["MONTHLY", "QUARTERLY", "ANNUALLY"], v.time_unit)
     ])
-    error_message = "Each budgets entry's time_unit must be one of: MONTHLY, QUARTERLY, ANNUALLY."
+    error_message = "Each budgets_items entry's time_unit must be one of: MONTHLY, QUARTERLY, ANNUALLY."
   }
 
   validation {
-    condition     = alltrue([for k, v in var.budgets : v.amount > 0])
-    error_message = "All budgets.*.amount must be > 0."
+    condition     = alltrue([for k, v in var.budgets_items : v.amount > 0])
+    error_message = "All budgets_items.*.amount must be > 0."
   }
 
   validation {
     condition = alltrue([
-      for k, v in var.budgets : v.scope == "account" || v.target != null
+      for k, v in var.budgets_items : v.scope == "account" || v.target != null
     ])
     error_message = "Non-account budgets require a target."
   }
 
   validation {
     condition = alltrue([
-      for k, v in var.budgets :
+      for k, v in var.budgets_items :
       v.scope != "service" || (v.target != null && v.target.service != null)
     ])
     error_message = "Scope 'service' budgets require target.service."
@@ -454,7 +697,7 @@ variable "budgets" {
 
   validation {
     condition = alltrue([
-      for k, v in var.budgets :
+      for k, v in var.budgets_items :
       v.scope != "tag" || (v.target != null && v.target.tag_key != null && v.target.tag_value != null)
     ])
     error_message = "Scope 'tag' budgets require target.tag_key and target.tag_value."
@@ -462,7 +705,7 @@ variable "budgets" {
 
   validation {
     condition = alltrue([
-      for k, v in var.budgets :
+      for k, v in var.budgets_items :
       v.scope != "cost_category" || (v.target != null && v.target.category_name != null && v.target.category_value != null)
     ])
     error_message = "Scope 'cost_category' budgets require target.category_name and target.category_value."
@@ -470,100 +713,10 @@ variable "budgets" {
 }
 
 ###############################################################################
-# Anomaly detection
+# 9. Idle resource cleanup — EBS / snapshot / EIP / ENI / NAT / LB
 ###############################################################################
 
-variable "enable_anomaly_detection" {
-  description = "Enable AWS Cost Anomaly Detection (service-level monitor + subscription)."
-  type        = bool
-  default     = true
-}
-
-variable "anomaly_min_impact_amount" {
-  description = "Minimum daily anomaly impact (in budget_currency) required to trigger an alert."
-  type        = number
-  default     = 100
-
-  validation {
-    condition     = var.anomaly_min_impact_amount >= 0
-    error_message = "anomaly_min_impact_amount must be >= 0."
-  }
-}
-
-variable "anomaly_min_impact_pct" {
-  description = "Minimum daily anomaly impact (% variance) required in addition to anomaly_min_impact_amount. Filters out high-variance low-cost workloads."
-  type        = number
-  default     = 20
-
-  validation {
-    condition     = var.anomaly_min_impact_pct >= 0 && var.anomaly_min_impact_pct <= 100
-    error_message = "anomaly_min_impact_pct must be between 0 and 100."
-  }
-}
-
-###############################################################################
-# Cost categories (allocation logic as code)
-###############################################################################
-
-variable "cost_categories" {
-  description = <<-EOT
-    AWS Cost Categories defined as code. Map key is the category name.
-    Each entry:
-      {
-        rule_version  = optional string, default "CostCategoryExpression.v1"
-        default_value = optional string, default "unallocated"
-        rules         = list of {
-          value = string
-          rule  = {
-            tags      = optional { key, values, match_options }
-            dimension = optional { key, values, match_options }
-          }
-        }
-      }
-  EOT
-  type = map(object({
-    rule_version  = optional(string, "CostCategoryExpression.v1")
-    default_value = optional(string, "unallocated")
-    rules = list(object({
-      value = string
-      rule = object({
-        tags = optional(object({
-          key           = string
-          values        = list(string)
-          match_options = list(string)
-        }))
-        dimension = optional(object({
-          key           = string
-          values        = list(string)
-          match_options = list(string)
-        }))
-      })
-    }))
-  }))
-  default = {}
-}
-
-###############################################################################
-# Optimization services
-###############################################################################
-
-variable "enable_compute_optimizer" {
-  description = "Enroll the account in AWS Compute Optimizer (free EC2/EBS/Lambda/ASG rightsizing recommendations)."
-  type        = bool
-  default     = true
-}
-
-variable "enable_cost_optimization_hub" {
-  description = "Enroll the account in AWS Cost Optimization Hub (consolidated recommendations dashboard)."
-  type        = bool
-  default     = true
-}
-
-###############################################################################
-# Idle resource cleanup
-###############################################################################
-
-variable "enable_idle_cleanup" {
+variable "idle_cleanup_enabled" {
   description = "Deploy idle-resource-cleanup Lambdas (EBS / EIP / Snapshot). Default false — even with dry_run on, deploying mutation-capable Lambdas should be an explicit decision."
   type        = bool
   default     = false
@@ -604,7 +757,7 @@ variable "idle_cleanup_snapshot_min_age_days" {
 }
 
 variable "idle_cleanup_scan_regions" {
-  description = "Regions the idle-resource-cleanup Lambdas iterate over. Empty list = home region only."
+  description = "Regions the idle-resource-cleanup Lambdas iterate over. Empty list (default) = framework effective_regions ([aws_primary_region] + aws_secondary_regions). Set explicitly to scope this module to a different region list."
   type        = list(string)
   default     = []
 }
@@ -616,10 +769,10 @@ variable "idle_cleanup_aging_seen_count_threshold" {
 }
 
 ###############################################################################
-# Instance scheduler
+# 10. Instance scheduler — tag-driven start/stop with action-count blast cap
 ###############################################################################
 
-variable "enable_instance_scheduler" {
+variable "instance_scheduler_enabled" {
   description = "Deploy the tag-driven instance scheduler. Default false — a Lambda with ec2:StopInstances should be an explicit decision."
   type        = bool
   default     = false
@@ -633,64 +786,106 @@ variable "instance_scheduler_opt_in_tag_key" {
 
 variable "instance_scheduler_schedules" {
   description = <<-EOT
-    Named schedules. Cron expressions in UTC (EventBridge six-field syntax).
+    Named schedules. Each schedule defines: which days of the week the
+    resource should be running, at what start time, until what stop time,
+    in which timezone.
+
+      days     = list of day codes — "MON" "TUE" "WED" "THU" "FRI" "SAT" "SUN"
+      start    = "HH:MM" 24h — resource must be RUNNING at and after this time on listed days
+      stop     = "HH:MM" 24h — resource must be STOPPED at and after this time on listed days
+      timezone = optional IANA timezone, default "UTC"
+
     Example:
       {
         office-hours-cet = {
-          start_cron = "0 6 ? * MON-FRI *"
-          stop_cron  = "0 18 ? * MON-FRI *"
+          days     = ["MON", "TUE", "WED", "THU", "FRI"]
+          start    = "08:00"
+          stop     = "18:00"
+          timezone = "Europe/Berlin"
+        }
+        always-off = {
+          days  = []        # empty days list = always stopped
+          start = "00:00"
+          stop  = "00:00"
         }
       }
   EOT
   type = map(object({
-    start_cron = string
-    stop_cron  = string
+    days     = list(string)
+    start    = string
+    stop     = string
+    timezone = optional(string, "UTC")
   }))
   default = {
     office-hours-cet = {
-      start_cron = "0 6 ? * MON-FRI *"
-      stop_cron  = "0 18 ? * MON-FRI *"
+      days     = ["MON", "TUE", "WED", "THU", "FRI"]
+      start    = "08:00"
+      stop     = "18:00"
+      timezone = "Europe/Berlin"
     }
     office-hours-est = {
-      start_cron = "0 12 ? * MON-FRI *"
-      stop_cron  = "0 0 ? * TUE-SAT *"
+      days     = ["MON", "TUE", "WED", "THU", "FRI"]
+      start    = "08:00"
+      stop     = "18:00"
+      timezone = "America/New_York"
     }
   }
 }
 
-###############################################################################
-# Savings coverage reporter
-###############################################################################
+variable "instance_scheduler_scan_regions" {
+  description = "Regions the instance-scheduler iterates. Empty (default) = framework effective_regions ([aws_primary_region] + aws_secondary_regions). Set explicitly to scope this module to a different region list."
+  type        = list(string)
+  default     = []
+}
 
-variable "enable_savings_coverage_reporter" {
-  description = "Deploy the weekly Lambda that reports RI and Savings Plan coverage and utilization."
+variable "instance_scheduler_tick_schedule" {
+  description = "EventBridge schedule expression for the scheduler Lambda tick."
+  type        = string
+  default     = "rate(5 minutes)"
+}
+
+variable "instance_scheduler_enable_rds_instances" {
+  description = "Schedule RDS DB instances."
   type        = bool
   default     = true
 }
 
-variable "savings_coverage_report_cron" {
-  description = "EventBridge cron expression (UTC, six fields) for the coverage reporter."
-  type        = string
-  default     = "0 9 ? * MON *"
+variable "instance_scheduler_enable_rds_clusters" {
+  description = "Schedule RDS DB clusters (Aurora)."
+  type        = bool
+  default     = true
 }
 
-variable "savings_coverage_target_pct" {
-  description = "Target RI/SP coverage percentage. Reports below this threshold are flagged in the alert payload."
+variable "instance_scheduler_enable_asg" {
+  description = "Schedule Auto Scaling Groups via scale-to-zero. Intrusive — opt-in deliberately."
+  type        = bool
+  default     = false
+}
+
+variable "instance_scheduler_max_actions_per_tick" {
+  description = "Blast-radius cap: hard ceiling on mutating actions per tick. Caps damage if a misconfiguration mass-targets resources."
   type        = number
-  default     = 70
+  default     = 200
+}
 
-  validation {
-    condition     = var.savings_coverage_target_pct >= 0 && var.savings_coverage_target_pct <= 100
-    error_message = "savings_coverage_target_pct must be between 0 and 100."
-  }
+variable "instance_scheduler_discovery_enabled" {
+  description = "Deploy the weekly auto-discovery Lambda that proposes scheduling candidates."
+  type        = bool
+  default     = true
+}
+
+variable "instance_scheduler_discovery_cron" {
+  description = "EventBridge cron expression (UTC, six fields) for the auto-discovery Lambda."
+  type        = string
+  default     = "0 9 ? * SUN *"
 }
 
 ###############################################################################
-# FinOps metrics (KPI emission)
+# 11. FinOps metrics — KPI aggregator (requires cost_data_exports + Athena)
 ###############################################################################
 
-variable "enable_finops_metrics" {
-  description = "Deploy the finops-metrics module: Athena named queries + daily KPI aggregator → CloudWatch + SSM. Requires enable_cost_data_exports + enable_athena_workgroup."
+variable "finops_metrics_enabled" {
+  description = "Deploy the finops-metrics module: Athena named queries + daily KPI aggregator → CloudWatch + SSM. Requires cost_data_exports_enabled + cost_data_exports_athena_enabled."
   type        = bool
   default     = true
 }
@@ -708,7 +903,7 @@ variable "finops_metrics_aggregator_cron" {
 }
 
 variable "finops_metrics_alarm_thresholds" {
-  description = "Per-KPI alarm thresholds. Set any value to null to skip the alarm."
+  description = "Per-KPI absolute-threshold alarm thresholds. Set any value to null to skip that alarm."
   type = object({
     allocation_coverage_min_pct     = optional(number, 80)
     commitment_coverage_min_pct     = optional(number, 70)
@@ -718,63 +913,76 @@ variable "finops_metrics_alarm_thresholds" {
   default = {}
 }
 
-###############################################################################
-# Notifications
-###############################################################################
-
-variable "notification_emails" {
-  description = "Email addresses subscribed to the FinOps events SNS topic."
-  type        = list(string)
-  default     = []
-
-  validation {
-    condition = alltrue([
-      for e in var.notification_emails : can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", e))
-    ])
-    error_message = "notification_emails must contain valid email addresses."
-  }
+variable "finops_metrics_builtin_kpis_enabled" {
+  description = "Per-KPI on/off map. Set any key to false to skip that built-in KPI entirely (no metric, no DDB snapshot, no alarm). Useful when an external tool (e.g. Cloudability) already owns the value."
+  type = object({
+    allocation_coverage    = optional(bool, true)
+    commitment_coverage    = optional(bool, true)
+    commitment_utilization = optional(bool, true)
+    anomaly_impact         = optional(bool, true)
+    forecast_drift         = optional(bool, true)
+    spend_by_service       = optional(bool, true)
+  })
+  default = {}
 }
 
-variable "slack_webhook_url" {
-  description = "Slack incoming webhook URL. Null disables the Slack notifier. SENSITIVE — set as a sensitive variable in TFE, never commit."
-  type        = string
-  default     = null
-  sensitive   = true
+variable "finops_metrics_custom_kpis" {
+  description = <<-EOT
+    User-defined KPIs. Each entry is registered as an Athena named query AND
+    executed by the aggregator Lambda, emitted as a CloudWatch metric
+    (Custom_<key>), written to a DDB snapshot, and optionally alarmed on.
+
+    The SQL must return a single row with a single numeric column. Available
+    substitutions: $${cur} → full CUR table, $${db} → database, $${prefix} → name_prefix.
+
+    Example:
+      finops_metrics_custom_kpis = {
+        cost_per_transaction = {
+          description = "Account spend / daily transaction count"
+          sql         = "SELECT ROUND(SUM(line_item_unblended_cost) / 100000.0, 4) FROM $${cur} WHERE billing_period = date_format(current_date, '%Y-%m')"
+          unit        = "None"
+          alarm       = { comparison = "GreaterThan", threshold = 0.50 }
+        }
+      }
+  EOT
+  type = map(object({
+    description = optional(string, "")
+    sql         = string
+    unit        = optional(string, "None")
+    alarm = optional(object({
+      comparison = string
+      threshold  = number
+    }))
+  }))
+  default = {}
 }
 
-variable "teams_webhook_url" {
-  description = "Microsoft Teams incoming webhook URL. Null disables the Teams notifier. SENSITIVE — set as a sensitive variable in TFE, never commit."
-  type        = string
-  default     = null
-  sensitive   = true
+variable "finops_metrics_trend_metrics_enabled" {
+  description = "Emit derived trend metrics (<Metric>_7dAvg / _30dAvg / _WoWDriftPct) computed from the DDB snapshot history. Unlocks week-over-week drift alarms."
+  type        = bool
+  default     = true
 }
 
-###############################################################################
-# Lambda runtime
-###############################################################################
-
-variable "lambda_runtime" {
-  description = "Python runtime applied to every Lambda the framework deploys. Bump in lockstep with AWS Lambda runtime deprecation announcements."
-  type        = string
-  default     = "python3.12"
-
-  validation {
-    condition     = can(regex("^python3\\.(1[0-9]|2[0-9])$", var.lambda_runtime))
-    error_message = "lambda_runtime must be a supported Python runtime (python3.10 .. python3.29)."
-  }
-}
-
-###############################################################################
-# Observability
-###############################################################################
-
-variable "log_retention_days" {
-  description = "CloudWatch log retention for all FinOps Lambda log groups. Default 365 (1y) suits most accounts. Set to 2557 (7y) for SOX/PCI/GDPR-regulated workloads, or 1827 (5y) for DORA."
+variable "finops_metrics_wow_drift_alarm_threshold_pct" {
+  description = "Alarm if AllocationCoveragePct drops > N% week-over-week. Null disables. Independent of the absolute-threshold alarms — catches regression that an absolute floor misses."
   type        = number
-  default     = 365
+  default     = 5
+}
 
-  validation {
-    condition     = contains([0, 1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653], var.log_retention_days)
-    error_message = "log_retention_days must be a valid CloudWatch retention value (0,1,3,5,7,14,30,60,90,120,150,180,365,400,545,731,1096,1827,2192,2557,2922,3288,3653)."
-  }
+variable "finops_metrics_snapshot_retention_days" {
+  description = "Days to keep daily KPI snapshots in DDB. Drives moving-average + drift compute. Minimum 35; default 400 (year + slack)."
+  type        = number
+  default     = 400
+}
+
+variable "finops_metrics_tag_value_dashboard_tag" {
+  description = "If set (e.g. \"BusinessUnit\"), the aggregator queries Athena for distinct values of this tag and rebuilds the dashboard with one widget per value. Null disables this feature."
+  type        = string
+  default     = null
+}
+
+variable "finops_metrics_tag_value_dashboard_top_n" {
+  description = "Max number of tag values to render as dashboard widgets. 0..30."
+  type        = number
+  default     = 12
 }

@@ -67,7 +67,10 @@ def main() -> None:
             s3_cur = S3("cost-data bucket\nCUR 2.0 + FOCUS")
             s3_athena = S3("athena-results")
             s3_config = S3("aws-config")
-            ddb = Dynamodb("idle-findings\nSTATE + ACTION")
+            ddb_idle = Dynamodb("idle-findings\nSTATE + ACTION")
+            ddb_sched = Dynamodb("scheduler-state\nSTATE + ACTION + GSI")
+            ddb_budgets = Dynamodb("budget-state\ntrend + audit")
+            ddb_alerting = Dynamodb("alerting-events\nDEDUP + AUDIT")
             secrets = SecretsManager("webhook URLs")
             ssm = SystemsManagerParameterStore("KPI mirror")
 
@@ -79,18 +82,18 @@ def main() -> None:
 
         # ---------- Compute Plane ----------
         with Cluster("Compute Plane"):
-            schedules = Eventbridge("EventBridge\nschedules")
-            with Cluster("Lambda fleet (11 functions)"):
-                fn_idle = Lambda("6 idle scanners")
+            schedules = Eventbridge("EventBridge\nschedules + rules")
+            with Cluster("Lambda fleet"):
+                fn_idle = Lambda("6 idle scanners\n(EBS/EIP/snap/NAT/ENI/LB)")
                 fn_kpi = Lambda("KPI aggregator")
                 fn_tag = Lambda("untagged-cost +\ntag drift")
-                fn_chat = Lambda("chat-notifier")
-                fn_sched = Lambda("instance scheduler")
-                fn_cov = Lambda("savings coverage")
+                fn_chat = Lambda("alerting dispatcher\n(chat-notifier)")
+                fn_sched = Lambda("instance scheduler\n+ weekly discovery")
+                fn_budget = Lambda("budget performance")
+                fn_health = Lambda("cost-data health")
             dlqs = SQS("DLQs\n(one per Lambda)")
             cfg = Config("AWS Config\n+ required-tag rules")
-            budgets = Budgets("AWS Budgets")
-            anomaly = CostExplorer("Cost Anomaly\nDetection")
+            budgets = Budgets("AWS Budgets\n+ Budget Actions")
 
         # ---------- Messaging (events bus) ----------
         sns = SNS("Events SNS topic")
@@ -99,7 +102,7 @@ def main() -> None:
         with Cluster("Observability Plane"):
             cw_metrics = Cloudwatch("Metrics\nFinOps/*")
             cw_alarms = CloudwatchAlarm("Alarms")
-            cw_dash = Cloudwatch("Dashboard")
+            cw_dash = Cloudwatch("Dashboards\n(per-module)")
             cw_logs = CloudwatchLogs("Logs\nCMK-encrypted")
             ctrail = Cloudtrail("CloudTrail\n(account-managed)")
 
@@ -109,9 +112,12 @@ def main() -> None:
             iam = IAM("Least-privilege\nIAM roles")
 
         # ---------- External consumers ----------
-        chat = Users("Slack / Teams")
+        chat = Users("Slack / Teams /\nPagerDuty / Opsgenie")
         email = Users("Email subs")
-        bi = Users("BI tool\n(QuickSight / PowerBI /\nLooker)")
+        bi = Users("BI tool\n(Cloudability /\nQuickSight / PowerBI)")
+
+        all_lambdas = [fn_idle, fn_kpi, fn_tag, fn_sched, fn_budget, fn_health, fn_chat]
+        scheduled_lambdas = [fn_idle, fn_kpi, fn_tag, fn_sched, fn_budget, fn_health]
 
         # ===== Data flow =====
         billing >> Edge(label="CUR 2.0 + FOCUS") >> s3_cur
@@ -120,19 +126,22 @@ def main() -> None:
         cfg >> s3_config
 
         # ===== Compute triggers + reads =====
-        schedules >> Edge(label="cron") >> [fn_idle, fn_kpi, fn_tag, fn_sched, fn_cov]
-        [fn_idle, fn_kpi, fn_tag, fn_sched, fn_cov, fn_chat] >> Edge(style="dashed", color="firebrick") >> dlqs
+        schedules >> Edge(label="cron") >> scheduled_lambdas
+        all_lambdas >> Edge(style="dashed", color="firebrick") >> dlqs
 
         fn_kpi >> Edge(label="SQL") >> athena
         fn_tag >> Edge(label="SQL") >> athena
-        fn_idle >> Edge(label="state +\naudit log") >> ddb
+        fn_health >> Edge(label="probe") >> athena
+        fn_idle >> Edge(label="state +\naudit log") >> ddb_idle
+        fn_sched >> Edge(label="state +\naudit log") >> ddb_sched
+        fn_budget >> Edge(label="trend") >> ddb_budgets
+        fn_chat >> Edge(label="dedup +\naudit") >> ddb_alerting
         fn_chat >> Edge(label="resolve") >> secrets
         [fn_kpi, fn_tag] >> Edge(label="KPI") >> ssm
 
         # ===== Events bus inputs =====
-        [fn_idle, fn_kpi, fn_tag, fn_sched, fn_cov] >> Edge(label="digests") >> sns
+        scheduled_lambdas >> Edge(label="digests") >> sns
         budgets >> Edge(label="breach") >> sns
-        anomaly >> Edge(label="anomaly") >> sns
         cfg >> Edge(label="non-compliance") >> schedules
         schedules >> Edge(label="tag drift") >> sns
 
@@ -142,8 +151,8 @@ def main() -> None:
         fn_chat >> Edge(label="POST webhook", style="dashed") >> chat
 
         # ===== Metrics + alarms =====
-        [fn_idle, fn_kpi, fn_tag, fn_sched, fn_cov] >> Edge(label="PutMetricData") >> cw_metrics
-        [fn_idle, fn_kpi, fn_tag, fn_sched, fn_cov, fn_chat] >> Edge(label="logs") >> cw_logs
+        scheduled_lambdas >> Edge(label="PutMetricData") >> cw_metrics
+        all_lambdas >> Edge(label="logs") >> cw_logs
         cw_metrics >> cw_dash
         cw_metrics >> cw_alarms
         cw_alarms >> Edge(label="ALARM") >> sns
@@ -152,17 +161,17 @@ def main() -> None:
         athena >> Edge(label="query", style="dashed") >> bi
 
         # ===== Audit trail =====
-        [fn_idle, fn_kpi, fn_tag, fn_sched, fn_cov] >> Edge(style="dotted", color="gray") >> ctrail
+        scheduled_lambdas >> Edge(style="dotted", color="gray") >> ctrail
 
         # ===== Encryption (KMS) =====
         kms >> Edge(label="encrypts at rest", style="dotted", color="purple") >> [
-            s3_cur, s3_athena, s3_config, ddb, secrets, sns, cw_logs,
+            s3_cur, s3_athena, s3_config,
+            ddb_idle, ddb_sched, ddb_budgets, ddb_alerting,
+            secrets, sns, cw_logs,
         ]
 
         # ===== IAM authorizes Lambdas =====
-        iam >> Edge(label="authorize", style="dotted", color="darkgreen") >> [
-            fn_idle, fn_kpi, fn_tag, fn_sched, fn_cov, fn_chat,
-        ]
+        iam >> Edge(label="authorize", style="dotted", color="darkgreen") >> all_lambdas
 
 
 if __name__ == "__main__":

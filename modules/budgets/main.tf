@@ -21,12 +21,12 @@
 # Inputs
 ###############################################################################
 
-variable "name_prefix"        { type = string }
-variable "events_topic_arn"   { type = string }
-variable "currency"           { type = string }
-variable "kms_key_arn"        { type = string }
+variable "name_prefix" { type = string }
+variable "events_topic_arn" { type = string }
+variable "currency" { type = string }
+variable "kms_key_arn" { type = string }
 variable "log_retention_days" { type = number }
-variable "default_tags"       { type = map(string) }
+variable "default_tags" { type = map(string) }
 
 variable "lambda_runtime" {
   type    = string
@@ -41,12 +41,12 @@ variable "budgets" {
   EOT
   type = map(object({
     # Required
-    scope  = string  # "account" | "service" | "tag" | "cost_category"
+    scope  = string # "account" | "service" | "tag" | "cost_category"
     amount = number
 
     # Optional period + currency overrides
-    time_unit = optional(string, "MONTHLY")  # MONTHLY | QUARTERLY | ANNUALLY
-    currency  = optional(string, null)        # overrides module's currency
+    time_unit = optional(string, "MONTHLY") # MONTHLY | QUARTERLY | ANNUALLY
+    currency  = optional(string, null)      # overrides module's currency
 
     # Filter target (required for non-account scope)
     target = optional(object({
@@ -60,7 +60,7 @@ variable "budgets" {
     # Custom thresholds. Empty = use default_thresholds.
     thresholds = optional(list(object({
       pct  = number
-      type = optional(string, "ACTUAL")  # ACTUAL | FORECASTED
+      type = optional(string, "ACTUAL") # ACTUAL | FORECASTED
     })), [])
 
     # Per-budget extra email subscribers (in addition to events topic)
@@ -70,7 +70,7 @@ variable "budgets" {
     actions = optional(list(object({
       threshold_pct     = number
       notification_type = optional(string, "ACTUAL") # ACTUAL | FORECASTED
-      action_type       = string                      # APPLY_IAM_POLICY | APPLY_SCP_POLICY | RUN_SSM_DOCUMENTS
+      action_type       = string                     # APPLY_IAM_POLICY | APPLY_SCP_POLICY | RUN_SSM_DOCUMENTS
       approval_model    = optional(string, "MANUAL") # MANUAL | AUTOMATIC
 
       # APPLY_IAM_POLICY
@@ -167,25 +167,25 @@ locals {
   metric_namespace = "FinOps/Budgets"
   ssm_prefix       = "/${var.name_prefix}/budgets"
 
-  current_year       = formatdate("YYYY", timestamp())
-  current_year_start = "${local.current_year}-01-01_00:00"
+  current_year        = formatdate("YYYY", timestamp())
+  current_year_start  = "${local.current_year}-01-01_00:00"
   current_month_start = formatdate("YYYY-MM-01_00:00", timestamp())
 
   # Per-time-unit anchor. AWS Budgets just needs a valid period_start; the
   # lifecycle ignore_changes below prevents drift on re-apply.
   period_start = {
-    MONTHLY    = local.current_month_start
-    QUARTERLY  = local.current_month_start
-    ANNUALLY   = local.current_year_start
+    MONTHLY   = local.current_month_start
+    QUARTERLY = local.current_month_start
+    ANNUALLY  = local.current_year_start
   }
 
   # Flatten per-budget actions into a single map keyed by "<budget>-action-<idx>".
   flattened_actions = flatten([
     for budget_key, budget in var.budgets : [
       for action_idx, action in budget.actions : {
-        key         = "${budget_key}-action-${action_idx}"
-        budget_key  = budget_key
-        action      = action
+        key        = "${budget_key}-action-${action_idx}"
+        budget_key = budget_key
+        action     = action
       }
     ]
   ])
@@ -528,9 +528,9 @@ resource "aws_iam_role_policy" "performance" {
         Resource = "*"
       },
       {
-        Effect = "Allow"
-        Action = ["ssm:PutParameter", "ssm:GetParameter"]
-        Resource = "arn:${data.aws_partition.current.partition}:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter${local.ssm_prefix}/*"
+        Effect   = "Allow"
+        Action   = ["ssm:PutParameter", "ssm:GetParameter"]
+        Resource = "arn:${data.aws_partition.current.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter${local.ssm_prefix}/*"
       },
       {
         Effect   = "Allow"
@@ -690,13 +690,13 @@ resource "aws_cloudwatch_dashboard" "budgets" {
         type = "metric", x = 0, y = 0, width = 8, height = 6,
         properties = {
           title  = "Budget adherence score (%)"
-          view   = "gauge", region = data.aws_region.current.name,
+          view   = "gauge", region = data.aws_region.current.region,
           period = 86400, stat = "Minimum",
-          yAxis = { left = { min = 0, max = 100 } },
+          yAxis  = { left = { min = 0, max = 100 } },
           annotations = {
             horizontal = [
               { value = var.adherence_alarm_threshold == null ? 80 : var.adherence_alarm_threshold,
-                label = "Target", color = "#9CCC65" }
+              label = "Target", color = "#9CCC65" }
             ]
           },
           metrics = [[local.metric_namespace, "BudgetAdherenceScore"]]
@@ -705,9 +705,9 @@ resource "aws_cloudwatch_dashboard" "budgets" {
       {
         type = "metric", x = 8, y = 0, width = 16, height = 6,
         properties = {
-          title  = "Active budget count"
-          view   = "singleValue", region = data.aws_region.current.name,
-          period = 86400, stat = "Maximum",
+          title   = "Active budget count"
+          view    = "singleValue", region = data.aws_region.current.region,
+          period  = 86400, stat = "Maximum",
           metrics = [[local.metric_namespace, "ActiveBudgetCount"]]
         }
       },
@@ -716,9 +716,9 @@ resource "aws_cloudwatch_dashboard" "budgets" {
         properties = {
           title  = "Variance % — by budget"
           view   = "timeSeries", stacked = false,
-          region = data.aws_region.current.name,
+          region = data.aws_region.current.region,
           period = 86400, stat = "Maximum",
-          yAxis = { left = { label = "Variance %" } },
+          yAxis  = { left = { label = "Variance %" } },
           metrics = [
             for k, _ in var.budgets : [
               local.metric_namespace, "VariancePct", "Budget", "${var.name_prefix}-${k}",
@@ -731,9 +731,9 @@ resource "aws_cloudwatch_dashboard" "budgets" {
         properties = {
           title  = "Burn-rate days-to-breach — by budget"
           view   = "timeSeries", stacked = false,
-          region = data.aws_region.current.name,
+          region = data.aws_region.current.region,
           period = 86400, stat = "Minimum",
-          yAxis = { left = { label = "Days until breach" } },
+          yAxis  = { left = { label = "Days until breach" } },
           metrics = [
             for k, _ in var.budgets : [
               local.metric_namespace, "BurnRateDaysToBreach", "Budget", "${var.name_prefix}-${k}",

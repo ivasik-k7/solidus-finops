@@ -25,12 +25,12 @@
 # Inputs
 ###############################################################################
 
-variable "name_prefix"        { type = string }
-variable "events_topic_arn"   { type = string }
-variable "kms_key_arn"        { type = string }
+variable "name_prefix" { type = string }
+variable "events_topic_arn" { type = string }
+variable "kms_key_arn" { type = string }
 variable "log_retention_days" { type = number }
-variable "lambda_runtime"     { type = string }
-variable "default_tags"       { type = map(string) }
+variable "lambda_runtime" { type = string }
+variable "default_tags" { type = map(string) }
 
 variable "dry_run" {
   description = "When true (default), every cleanup Lambda only reports. When false, mutation-capable scans actually delete (still bounded by cost ceiling + exception tags)."
@@ -79,7 +79,7 @@ variable "enable_lb_cleanup" {
 
 # Per-resource-type age / threshold ------------------------------------------
 
-variable "ebs_min_age_days"      { type = number }
+variable "ebs_min_age_days" { type = number }
 variable "snapshot_min_age_days" { type = number }
 
 variable "nat_min_age_days" {
@@ -324,9 +324,9 @@ locals {
       memory  = 256
       cron    = var.lb_schedule
       env = {
-        MIN_AGE_DAYS            = tostring(var.lb_min_age_days)
-        IDLE_LOOKBACK_DAYS      = tostring(var.lb_idle_lookback_days)
-        IDLE_REQUEST_THRESHOLD  = tostring(var.lb_idle_request_threshold)
+        MIN_AGE_DAYS           = tostring(var.lb_min_age_days)
+        IDLE_LOOKBACK_DAYS     = tostring(var.lb_idle_lookback_days)
+        IDLE_REQUEST_THRESHOLD = tostring(var.lb_idle_request_threshold)
       }
     }
   }
@@ -412,7 +412,7 @@ locals {
     AGING_SEEN_COUNT_THRESHOLD = tostring(var.aging_seen_count_threshold)
     FINDINGS_TTL_DAYS          = tostring(var.findings_ttl_days)
     ACTIONS_TTL_DAYS           = tostring(var.actions_ttl_days)
-    SCAN_REGIONS               = jsonencode(length(var.scan_regions) > 0 ? var.scan_regions : [data.aws_region.current.name])
+    SCAN_REGIONS               = jsonencode(length(var.scan_regions) > 0 ? var.scan_regions : [data.aws_region.current.region])
   }
 }
 
@@ -466,8 +466,8 @@ resource "aws_iam_role_policy" "this" {
       local.iam_statements[each.key],
       [
         { Effect = "Allow", Action = ["cloudwatch:PutMetricData"], Resource = "*" },
-        { Effect = "Allow", Action = ["sns:Publish"],              Resource = var.events_topic_arn },
-        { Effect = "Allow", Action = ["sqs:SendMessage"],          Resource = aws_sqs_queue.dlq[each.key].arn },
+        { Effect = "Allow", Action = ["sns:Publish"], Resource = var.events_topic_arn },
+        { Effect = "Allow", Action = ["sqs:SendMessage"], Resource = aws_sqs_queue.dlq[each.key].arn },
         # DDB findings state + audit log access (scoped to the findings table
         # only, including its GSIs).
         {
@@ -725,7 +725,7 @@ resource "aws_cloudwatch_dashboard" "idle_cleanup" {
         properties = {
           title  = "Monthly waste — by resource type"
           view   = "timeSeries", stacked = false,
-          region = data.aws_region.current.name,
+          region = data.aws_region.current.region,
           period = 86400, stat = "Maximum",
           metrics = [
             for k, _ in local.enabled_types : [
@@ -746,7 +746,7 @@ resource "aws_cloudwatch_dashboard" "idle_cleanup" {
         properties = {
           title  = "Per-run savings ($/run)"
           view   = "timeSeries", stacked = true,
-          region = data.aws_region.current.name,
+          region = data.aws_region.current.region,
           period = 604800, stat = "Sum",
           metrics = [
             for k, _ in local.enabled_types : [
@@ -767,7 +767,7 @@ resource "aws_cloudwatch_dashboard" "idle_cleanup" {
         properties = {
           title  = "Found count over time — by resource type"
           view   = "timeSeries", stacked = true,
-          region = data.aws_region.current.name,
+          region = data.aws_region.current.region,
           period = 86400, stat = "Maximum",
           metrics = [
             for k, _ in local.enabled_types : [
@@ -788,7 +788,7 @@ resource "aws_cloudwatch_dashboard" "idle_cleanup" {
         properties = {
           title  = "Cleanup Lambda errors (any > 0 is a problem)"
           view   = "timeSeries", stacked = false,
-          region = data.aws_region.current.name,
+          region = data.aws_region.current.region,
           period = 300, stat = "Sum",
           metrics = [
             for k, _ in local.enabled_types : [
@@ -808,7 +808,7 @@ resource "aws_cloudwatch_dashboard" "idle_cleanup" {
         properties = {
           title  = "DLQ depth (any non-zero means failed invocations)"
           view   = "singleValue", stacked = false,
-          region = data.aws_region.current.name,
+          region = data.aws_region.current.region,
           period = 300, stat = "Maximum",
           metrics = [
             for k, _ in local.enabled_types : [
@@ -868,5 +868,5 @@ output "dashboard_name" {
 
 output "scan_regions" {
   description = "Regions each Lambda scans (defaults to home region if unset at the root)."
-  value       = length(var.scan_regions) > 0 ? var.scan_regions : [data.aws_region.current.name]
+  value       = length(var.scan_regions) > 0 ? var.scan_regions : [data.aws_region.current.region]
 }

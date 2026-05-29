@@ -3,28 +3,25 @@
 #
 # Demonstrates how to deploy only the modules you actually want and leave
 # every other module disabled. Toggle them on later by flipping a single
-# enable_* flag — no other code changes required.
+# `<module>_enabled` flag — no other code changes required.
 #
 # This particular configuration enables:
-#   ✅ budgets                  — polymorphic budgets + Budget Actions + DDB + dashboard
-#   ✅ idle-resource-cleanup    — 6 resource types + multi-region + DDB audit
-#   ✅ tag-governance           — required tags + drift + Resource Groups
+#   ✅ alerting                — events SNS bus (always on; required infra)
+#   ✅ budgets                 — polymorphic budgets + Budget Actions + DDB + dashboard
+#   ✅ idle-resource-cleanup   — 6 resource types + multi-region + DDB audit
+#   ✅ tag-governance          — required tags + drift + Resource Groups
 #
 # And disables:
-#   ❌ cost-data-exports        — no CUR / FOCUS / Athena (also disables anything
-#                                  that needs Athena — finops-metrics, untagged-cost)
-#   ❌ anomaly-detection
-#   ❌ cost-categories          — implicit: no entries in var.cost_categories
-#   ❌ optimization-services    — Compute Optimizer + Cost Optimization Hub off
+#   ❌ cost-data-exports       — no CUR / FOCUS / Athena (also disables anything
+#                                 that needs Athena — finops-metrics, untagged-cost)
 #   ❌ instance-scheduler
-#   ❌ savings-coverage-reporter
-#   ❌ finops-metrics
+#   ❌ finops-metrics          — needs cost-data-exports + Athena anyway
 #
 # Always-on (cannot be disabled):
 #   • alerting        — events SNS bus + chat-notifier (everything publishes here)
 #   • KMS CMK         — encrypts everything; turning it off would break compliance
 #
-# To enable a disabled module, just flip its `enable_<name> = true`. Pass any
+# To enable a disabled module, just flip its `<module>_enabled = true`. Pass any
 # module-specific variables you need; defaults work for the rest.
 # =============================================================================
 
@@ -32,10 +29,10 @@ module "finops" {
   source = "../../"
 
   # === Identity ==============================================================
-  namespace   = "examplecorp"
-  environment = "shared"
-  stack_name  = "finops"
-  aws_region  = "eu-central-1"
+  namespace          = "examplecorp"
+  environment        = "shared"
+  stack_name         = "finops"
+  aws_primary_region = "eu-central-1"
 
   # === Encryption (always on) ================================================
   create_kms_key               = true
@@ -47,79 +44,65 @@ module "finops" {
 
   # Cost & Usage Reports — no CUR/FOCUS/Athena. Disable also implies no
   # downstream finops-metrics and no untagged-cost-report.
-  enable_cost_data_exports = false
-  # enable_focus_export      = true       # only meaningful when CUR exports are on
-  # enable_athena_workgroup  = true
+  cost_data_exports_enabled = false
+  # cost_data_exports_focus_enabled  = true   # only meaningful when CUR exports are on
+  # cost_data_exports_athena_enabled = true
 
-  # Anomaly detection — Cost Anomaly Detection service-level monitor.
-  enable_anomaly_detection = false
-  # anomaly_min_impact_amount = 100
-  # anomaly_min_impact_pct    = 20
-
-  # Optimization services — Compute Optimizer + Cost Optimization Hub (both free).
-  enable_compute_optimizer     = false
-  enable_cost_optimization_hub = false
-
-  # Instance scheduler — tag-driven EC2 start/stop.
-  enable_instance_scheduler = false
+  # Instance scheduler — tag-driven EC2 / RDS / ASG start/stop.
+  instance_scheduler_enabled = false
   # instance_scheduler_opt_in_tag_key = "Schedule"
   # instance_scheduler_schedules = {
   #   office-hours-cet = {
-  #     start_cron = "0 6 ? * MON-FRI *"
-  #     stop_cron  = "0 18 ? * MON-FRI *"
+  #     days     = ["MON", "TUE", "WED", "THU", "FRI"]
+  #     start    = "08:00"
+  #     stop     = "18:00"
+  #     timezone = "Europe/Berlin"
   #   }
   # }
 
-  # Savings coverage reporter — weekly RI/SP coverage + utilization digest.
-  enable_savings_coverage_reporter = false
-  # savings_coverage_target_pct = 70
-
   # FinOps metrics — daily KPI aggregator + Athena named queries.
-  # Requires enable_cost_data_exports = true to function.
-  enable_finops_metrics = false
-
-  # Cost categories — implicit toggle: empty map = module not deployed.
-  cost_categories = {}
+  # Requires cost_data_exports_enabled = true to function.
+  finops_metrics_enabled = false
 
   # ---------------------------------------------------------------------------
   # ENABLED MODULES
   # ---------------------------------------------------------------------------
 
   # === Tag governance ========================================================
-  enable_tag_governance                   = true
-  tag_governance_record_global_resources  = false  # skip IAM/CloudFront/Route53 to keep Config volume down
+  tag_governance_enabled                 = true
+  tag_governance_record_global_resources = false # skip IAM/CloudFront/Route53 to keep Config volume down
 
-  required_tags = [
-    { key = "CostCenter",   allowed_values = [] },
-    { key = "Environment",  allowed_values = ["prod", "nonprod", "sandbox"] },
-    { key = "Owner",        allowed_values = [] },
-    { key = "Application",  allowed_values = [] },
+  tag_governance_required_tags = [
+    { key = "CostCenter", allowed_values = [] },
+    { key = "Environment", allowed_values = ["prod", "nonprod", "sandbox"] },
+    { key = "Owner", allowed_values = [] },
+    { key = "Application", allowed_values = [] },
   ]
 
-  tag_taxonomy = {
-    CostCenter  = { level = "mandatory", purpose = "allocation",  description = "Finance cost center ID", examples = ["CC-1001"] }
+  tag_governance_taxonomy = {
+    CostCenter  = { level = "mandatory", purpose = "allocation", description = "Finance cost center ID", examples = ["CC-1001"] }
     Environment = { level = "mandatory", purpose = "operational", description = "Deployment environment" }
-    Owner       = { level = "mandatory", purpose = "lifecycle",   description = "Email of the human owner" }
-    Application = { level = "mandatory", purpose = "allocation",  description = "Logical application name" }
+    Owner       = { level = "mandatory", purpose = "lifecycle", description = "Email of the human owner" }
+    Application = { level = "mandatory", purpose = "allocation", description = "Logical application name" }
   }
 
-  enable_tag_drift_detection = true
-  tag_drift_watched_keys     = ["CostCenter", "Owner"]
+  tag_governance_drift_detection_enabled = true
+  tag_governance_drift_watched_keys      = ["CostCenter", "Owner"]
 
   # Untagged-cost report requires Athena, which is off here. Leave disabled.
-  enable_untagged_cost_report = false
+  tag_governance_untagged_cost_report_enabled = false
 
-  allocation_resource_groups = {
+  tag_governance_allocation_resource_groups = {
     env-prod    = { tag_key = "Environment", tag_values = ["prod"] }
     env-nonprod = { tag_key = "Environment", tag_values = ["nonprod"] }
   }
 
   # === Budgets ===============================================================
-  budget_currency                    = "USD"
-  enable_budget_performance_tracking = true
-  budget_adherence_alarm_threshold   = 85
+  budgets_currency                     = "USD"
+  budgets_performance_tracking_enabled = true
+  budgets_adherence_alarm_threshold    = 85
 
-  budgets = {
+  budgets_items = {
     account_monthly = {
       scope    = "account"
       amount   = 50000
@@ -149,11 +132,11 @@ module "finops" {
 
   # === Idle resource cleanup =================================================
   # Off by default at the root variable level — turn on here.
-  enable_idle_cleanup  = true
-  idle_cleanup_dry_run = true   # KEEP TRUE until you've reviewed at least one weekly cycle
+  idle_cleanup_enabled = true
+  idle_cleanup_dry_run = true # KEEP TRUE until you've reviewed at least one weekly cycle
 
   # Multi-region scanning (empty = home region only)
-  idle_cleanup_scan_regions = []  # add ["us-east-1", "ap-southeast-1"] when ready
+  idle_cleanup_scan_regions = [] # add ["us-east-1", "ap-southeast-1"] when ready
 
   # Per-resource thresholds (defaults usually fine)
   idle_cleanup_ebs_min_age_days      = 14
@@ -162,16 +145,16 @@ module "finops" {
   # ---------------------------------------------------------------------------
   # Notifications (always on — events bus is required for anything to fan out)
   # ---------------------------------------------------------------------------
-  notification_emails = ["finops@examplecorp.com"]
+  alerting_legacy_emails = ["finops@examplecorp.com"]
 
   # Sensitive — set in TFE workspace variables, not here:
-  # slack_webhook_url = var.slack_webhook_url
-  # teams_webhook_url = var.teams_webhook_url
+  # alerting_slack_webhook_url = var.slack_webhook_url
+  # alerting_teams_webhook_url = var.teams_webhook_url
 
   # ---------------------------------------------------------------------------
   # Observability
   # ---------------------------------------------------------------------------
-  log_retention_days = 365  # 1y — bump to 1827 (5y) / 2557 (7y) for regulated workloads
+  log_retention_days = 365 # 1y — bump to 1827 (5y) / 2557 (7y) for regulated workloads
 
   # Extra tags merged into framework defaults + applied to every resource
   extra_tags = {
@@ -185,9 +168,19 @@ output "events_topic_arn" {
   value = module.finops.events_topic_arn
 }
 
-output "budget_dashboard_name" {
+output "framework_status" {
+  description = "Single-glance status of what's deployed and where to find dashboards."
+  value       = module.finops.framework_status
+}
+
+output "enabled_modules" {
+  description = "Map of module -> enabled flag (for downstream CI assertions)."
+  value       = module.finops.enabled_modules
+}
+
+output "budgets_dashboard_name" {
   description = "CloudWatch dashboard for budget performance."
-  value       = module.finops.budget_dashboard_name
+  value       = module.finops.budgets_dashboard_name
 }
 
 output "idle_cleanup_dashboard_name" {
@@ -195,8 +188,8 @@ output "idle_cleanup_dashboard_name" {
   value       = module.finops.idle_cleanup_dashboard_name
 }
 
-output "tag_compliance_config_rule_names" {
-  value = module.finops.tag_compliance_config_rule_names
+output "tag_governance_config_rule_names" {
+  value = module.finops.tag_governance_config_rule_names
 }
 
 output "lambda_dlq_arns" {

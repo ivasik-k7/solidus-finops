@@ -132,14 +132,22 @@ resource "aws_kms_alias" "finops" {
 module "alerting" {
   source = "./modules/alerting"
 
-  name_prefix         = local.name_prefix
-  kms_key_arn         = local.kms_key_arn
-  notification_emails = var.notification_emails
-  slack_webhook_url   = var.slack_webhook_url
-  teams_webhook_url   = var.teams_webhook_url
-  log_retention_days  = var.log_retention_days
-  lambda_runtime      = var.lambda_runtime
-  default_tags        = local.default_tags
+  name_prefix        = local.name_prefix
+  kms_key_arn        = local.kms_key_arn
+  log_retention_days = var.log_retention_days
+  lambda_runtime     = var.lambda_runtime
+  default_tags       = local.default_tags
+
+  # Polymorphic multi-channel schema
+  channels      = var.alerting_channels
+  deduplication = var.alerting_deduplication
+  audit_log     = var.alerting_audit_log
+
+  # Legacy inputs — still wired through. If alerting_channels is empty,
+  # these become the single Slack + Teams + email channels.
+  notification_emails = var.alerting_legacy_emails
+  slack_webhook_url   = var.alerting_slack_webhook_url
+  teams_webhook_url   = var.alerting_teams_webhook_url
 }
 
 ###############################################################################
@@ -148,17 +156,27 @@ module "alerting" {
 
 module "cost_data_exports" {
   source = "./modules/cost-data-exports"
-  count  = var.enable_cost_data_exports ? 1 : 0
+  count  = var.cost_data_exports_enabled ? 1 : 0
 
   name_prefix               = local.name_prefix
   bucket_name               = local.cost_data_bucket_name
   kms_key_arn               = local.kms_key_arn
-  enable_focus_export       = var.enable_focus_export
-  enable_athena_workgroup   = var.enable_athena_workgroup
-  cost_data_retention_days  = var.cost_data_retention_days
-  cost_data_expiration_days = var.cost_data_expiration_days
+  enable_focus_export       = var.cost_data_exports_focus_enabled
+  enable_athena_workgroup   = var.cost_data_exports_athena_enabled
+  cost_data_retention_days  = var.cost_data_exports_retention_days
+  cost_data_expiration_days = var.cost_data_exports_expiration_days
   account_id                = local.account_id
   default_tags              = local.default_tags
+
+  events_topic_arn           = local.events_topic_arn
+  log_retention_days         = var.log_retention_days
+  lambda_runtime             = var.lambda_runtime
+  cross_account_readers      = var.cost_data_exports_cross_account_readers
+  enable_health_check        = var.cost_data_exports_health_check_enabled
+  health_check_schedule_cron = var.cost_data_exports_health_check_cron
+  cur_freshness_alarm_hours  = var.cost_data_exports_cur_freshness_alarm_hours
+  enable_named_queries       = var.cost_data_exports_named_queries_enabled
+  extra_named_queries        = var.cost_data_exports_extra_named_queries
 }
 
 ###############################################################################
@@ -167,55 +185,23 @@ module "cost_data_exports" {
 
 module "budgets" {
   source = "./modules/budgets"
-  count  = length(var.budgets) > 0 ? 1 : 0
+  count  = length(var.budgets_items) > 0 ? 1 : 0
 
   name_prefix        = local.name_prefix
   events_topic_arn   = local.events_topic_arn
-  currency           = var.budget_currency
-  budgets            = var.budgets
-  default_thresholds = var.budget_default_thresholds
+  currency           = var.budgets_currency
+  budgets            = var.budgets_items
+  default_thresholds = var.budgets_default_thresholds
 
-  # Performance Lambda + DDB + dashboard
   kms_key_arn                    = local.kms_key_arn
   log_retention_days             = var.log_retention_days
   lambda_runtime                 = var.lambda_runtime
-  enable_performance_tracking    = var.enable_budget_performance_tracking
-  performance_schedule_cron      = var.budget_performance_schedule_cron
-  adherence_alarm_threshold      = var.budget_adherence_alarm_threshold
-  burn_rate_alarm_days_to_breach = var.budget_burn_rate_alarm_days_to_breach
+  enable_performance_tracking    = var.budgets_performance_tracking_enabled
+  performance_schedule_cron      = var.budgets_performance_schedule_cron
+  adherence_alarm_threshold      = var.budgets_adherence_alarm_threshold
+  burn_rate_alarm_days_to_breach = var.budgets_burn_rate_alarm_days_to_breach
 
   default_tags = local.default_tags
-
-  # Budgets with scope = "cost_category" reference a category by name+value;
-  # the category must exist when the budget is created. Force the order.
-  depends_on = [module.cost_categories]
-}
-
-###############################################################################
-# Module: anomaly-detection
-###############################################################################
-
-module "anomaly_detection" {
-  source = "./modules/anomaly-detection"
-  count  = var.enable_anomaly_detection ? 1 : 0
-
-  name_prefix       = local.name_prefix
-  events_topic_arn  = local.events_topic_arn
-  min_impact_amount = var.anomaly_min_impact_amount
-  min_impact_pct    = var.anomaly_min_impact_pct
-  default_tags      = local.default_tags
-}
-
-###############################################################################
-# Module: cost-categories
-###############################################################################
-
-module "cost_categories" {
-  source = "./modules/cost-categories"
-  count  = length(var.cost_categories) > 0 ? 1 : 0
-
-  cost_categories = var.cost_categories
-  default_tags    = local.default_tags
 }
 
 ###############################################################################
@@ -224,41 +210,29 @@ module "cost_categories" {
 
 module "tag_governance" {
   source = "./modules/tag-governance"
-  count  = var.enable_tag_governance ? 1 : 0
+  count  = var.tag_governance_enabled ? 1 : 0
 
-  name_prefix              = local.name_prefix
-  required_tags            = var.required_tags
-  resource_types           = var.tag_compliance_resource_types
-  record_global_resources  = var.tag_governance_record_global_resources
-  events_topic_arn         = local.events_topic_arn
-  kms_key_arn              = local.kms_key_arn
-  log_retention_days       = var.log_retention_days
-  lambda_runtime           = var.lambda_runtime
+  name_prefix             = local.name_prefix
+  required_tags           = var.tag_governance_required_tags
+  resource_types          = var.tag_governance_compliance_resource_types
+  record_global_resources = var.tag_governance_record_global_resources
+  events_topic_arn        = local.events_topic_arn
+  kms_key_arn             = local.kms_key_arn
+  log_retention_days      = var.log_retention_days
+  lambda_runtime          = var.lambda_runtime
 
-  # Enriched FinOps capabilities
-  tag_taxonomy                       = var.tag_taxonomy
-  enable_tag_drift_detection         = var.enable_tag_drift_detection
-  tag_drift_watched_keys             = var.tag_drift_watched_keys
-  enable_untagged_cost_report        = var.enable_untagged_cost_report && var.enable_cost_data_exports && var.enable_athena_workgroup
-  untagged_cost_report_cron          = var.untagged_cost_report_cron
-  untagged_cost_alarm_threshold_usd  = var.untagged_cost_alarm_threshold_usd
-  athena_workgroup_name              = var.enable_cost_data_exports && var.enable_athena_workgroup ? module.cost_data_exports[0].athena_workgroup_name : null
-  athena_database_name               = var.enable_cost_data_exports && var.enable_athena_workgroup ? module.cost_data_exports[0].athena_database_name : null
-  cur_table_name                     = var.enable_cost_data_exports && var.enable_athena_workgroup ? module.cost_data_exports[0].cur2_table_name : "unset"
-  allocation_resource_groups         = var.allocation_resource_groups
+  tag_taxonomy                      = var.tag_governance_taxonomy
+  enable_tag_drift_detection        = var.tag_governance_drift_detection_enabled
+  tag_drift_watched_keys            = var.tag_governance_drift_watched_keys
+  enable_untagged_cost_report       = var.tag_governance_untagged_cost_report_enabled && var.cost_data_exports_enabled && var.cost_data_exports_athena_enabled
+  untagged_cost_report_cron         = var.tag_governance_untagged_cost_report_cron
+  untagged_cost_alarm_threshold_usd = var.tag_governance_untagged_cost_alarm_threshold_usd
+  athena_workgroup_name             = var.cost_data_exports_enabled && var.cost_data_exports_athena_enabled ? module.cost_data_exports[0].athena_workgroup_name : null
+  athena_database_name              = var.cost_data_exports_enabled && var.cost_data_exports_athena_enabled ? module.cost_data_exports[0].athena_database_name : null
+  cur_table_name                    = var.cost_data_exports_enabled && var.cost_data_exports_athena_enabled ? module.cost_data_exports[0].cur2_table_name : "unset"
+  allocation_resource_groups        = var.tag_governance_allocation_resource_groups
 
   default_tags = local.default_tags
-}
-
-###############################################################################
-# Module: optimization-services
-###############################################################################
-
-module "optimization_services" {
-  source = "./modules/optimization-services"
-
-  enable_compute_optimizer     = var.enable_compute_optimizer
-  enable_cost_optimization_hub = var.enable_cost_optimization_hub
 }
 
 ###############################################################################
@@ -267,7 +241,7 @@ module "optimization_services" {
 
 module "idle_resource_cleanup" {
   source = "./modules/idle-resource-cleanup"
-  count  = var.enable_idle_cleanup ? 1 : 0
+  count  = var.idle_cleanup_enabled ? 1 : 0
 
   name_prefix                = local.name_prefix
   events_topic_arn           = local.events_topic_arn
@@ -278,7 +252,7 @@ module "idle_resource_cleanup" {
   exception_tag_key          = var.idle_cleanup_exception_tag_key
   ebs_min_age_days           = var.idle_cleanup_ebs_min_age_days
   snapshot_min_age_days      = var.idle_cleanup_snapshot_min_age_days
-  scan_regions               = var.idle_cleanup_scan_regions
+  scan_regions               = length(var.idle_cleanup_scan_regions) > 0 ? var.idle_cleanup_scan_regions : local.effective_regions
   aging_seen_count_threshold = var.idle_cleanup_aging_seen_count_threshold
   default_tags               = local.default_tags
 }
@@ -289,7 +263,7 @@ module "idle_resource_cleanup" {
 
 module "instance_scheduler" {
   source = "./modules/instance-scheduler"
-  count  = var.enable_instance_scheduler ? 1 : 0
+  count  = var.instance_scheduler_enabled ? 1 : 0
 
   name_prefix        = local.name_prefix
   events_topic_arn   = local.events_topic_arn
@@ -299,11 +273,16 @@ module "instance_scheduler" {
   opt_in_tag_key     = var.instance_scheduler_opt_in_tag_key
   schedules          = var.instance_scheduler_schedules
   default_tags       = local.default_tags
-}
 
-###############################################################################
-# Module: savings-coverage-reporter
-###############################################################################
+  scan_regions            = length(var.instance_scheduler_scan_regions) > 0 ? var.instance_scheduler_scan_regions : local.effective_regions
+  tick_schedule           = var.instance_scheduler_tick_schedule
+  enable_rds_instances    = var.instance_scheduler_enable_rds_instances
+  enable_rds_clusters     = var.instance_scheduler_enable_rds_clusters
+  enable_asg              = var.instance_scheduler_enable_asg
+  max_actions_per_tick    = var.instance_scheduler_max_actions_per_tick
+  enable_discovery        = var.instance_scheduler_discovery_enabled
+  discovery_schedule_cron = var.instance_scheduler_discovery_cron
+}
 
 ###############################################################################
 # Module: finops-metrics
@@ -314,32 +293,29 @@ module "instance_scheduler" {
 
 module "finops_metrics" {
   source = "./modules/finops-metrics"
-  count  = var.enable_finops_metrics && var.enable_cost_data_exports && var.enable_athena_workgroup ? 1 : 0
+  count  = var.finops_metrics_enabled && var.cost_data_exports_enabled && var.cost_data_exports_athena_enabled ? 1 : 0
 
-  name_prefix            = local.name_prefix
-  events_topic_arn       = local.events_topic_arn
-  kms_key_arn            = local.kms_key_arn
-  log_retention_days     = var.log_retention_days
-  lambda_runtime         = var.lambda_runtime
-  athena_workgroup_name  = module.cost_data_exports[0].athena_workgroup_name
-  athena_database_name   = module.cost_data_exports[0].athena_database_name
-  cur_table_name         = module.cost_data_exports[0].cur2_table_name
-  allocation_tag_keys    = var.finops_metrics_allocation_tag_keys
-  aggregator_cron        = var.finops_metrics_aggregator_cron
-  alarm_thresholds       = var.finops_metrics_alarm_thresholds
-  default_tags           = local.default_tags
+  name_prefix           = local.name_prefix
+  events_topic_arn      = local.events_topic_arn
+  kms_key_arn           = local.kms_key_arn
+  log_retention_days    = var.log_retention_days
+  lambda_runtime        = var.lambda_runtime
+  athena_workgroup_name = module.cost_data_exports[0].athena_workgroup_name
+  athena_database_name  = module.cost_data_exports[0].athena_database_name
+  cur_table_name        = module.cost_data_exports[0].cur2_table_name
+  allocation_tag_keys   = var.finops_metrics_allocation_tag_keys
+  aggregator_cron       = var.finops_metrics_aggregator_cron
+  alarm_thresholds      = var.finops_metrics_alarm_thresholds
+
+  # Game-changing additions (v1.0)
+  builtin_kpis_enabled          = var.finops_metrics_builtin_kpis_enabled
+  custom_kpis                   = var.finops_metrics_custom_kpis
+  trend_metrics_enabled         = var.finops_metrics_trend_metrics_enabled
+  wow_drift_alarm_threshold_pct = var.finops_metrics_wow_drift_alarm_threshold_pct
+  snapshot_retention_days       = var.finops_metrics_snapshot_retention_days
+  tag_value_dashboard_tag       = var.finops_metrics_tag_value_dashboard_tag
+  tag_value_dashboard_top_n     = var.finops_metrics_tag_value_dashboard_top_n
+
+  default_tags = local.default_tags
 }
 
-module "savings_coverage_reporter" {
-  source = "./modules/savings-coverage-reporter"
-  count  = var.enable_savings_coverage_reporter ? 1 : 0
-
-  name_prefix         = local.name_prefix
-  events_topic_arn    = local.events_topic_arn
-  kms_key_arn         = local.kms_key_arn
-  log_retention_days  = var.log_retention_days
-  lambda_runtime      = var.lambda_runtime
-  report_cron         = var.savings_coverage_report_cron
-  target_coverage_pct = var.savings_coverage_target_pct
-  default_tags        = local.default_tags
-}

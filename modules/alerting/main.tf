@@ -1,48 +1,45 @@
 ###############################################################################
-# Alerting module
+# Alerting module — events-bus-as-a-service
 #
-# Provides a single SNS topic that ALL FinOps modules publish to.
-# Optionally fans out to Slack and/or Teams via Lambda.
+# A standalone, multi-channel event dispatcher. Reusable outside the FinOps
+# framework: this module has no hard dependency on any other module in this
+# repo. Publishers fire to the SNS topic; the dispatcher Lambda routes by
+# severity to all enabled channels, deduplicates repeated alerts, and writes
+# an audit trail to DynamoDB.
 #
-# Design notes:
-#   - One topic, many channels — keeps governance simple.
-#   - KMS-encrypted topic — banking-grade.
-#   - Lambda log groups encrypted with the same key.
-#   - 7-year log retention default.
+# Channels supported (each polymorphic, multiple instances per type):
+#   - email          AWS SNS native; first 1k/mo free
+#   - slack          Incoming webhooks; rich Block Kit cards
+#   - teams          Incoming webhooks; Adaptive Cards
+#   - pagerduty      Events API v2; production paging
+#   - opsgenie       Alerts API; US or EU region
+#   - generic_webhook  Any HTTPS endpoint (custom integrations)
+#   - sqs            Queue ARN; downstream consumers pull at their pace
+#
+# Per-channel filtering by severity (info / low / medium / high / critical)
+# lets you route critical alerts to PagerDuty while low-severity ones go to
+# an info-only Slack channel.
+#
+# Backward compat: `notification_emails`, `slack_webhook_url`, and
+# `teams_webhook_url` still work — they're synthesized into `channels` at
+# module-locals time. Prefer the new `channels` schema for new deployments.
 ###############################################################################
 
-variable "name_prefix" {
-  type = string
-}
+###############################################################################
+# Inputs
+###############################################################################
 
-variable "kms_key_arn" {
-  type = string
-}
-
-variable "notification_emails" {
-  type    = list(string)
-  default = []
-}
-
-variable "slack_webhook_url" {
-  type      = string
-  default   = null
-  sensitive = true
-}
-
-variable "teams_webhook_url" {
-  type      = string
-  default   = null
-  sensitive = true
-}
+variable "name_prefix" { type = string }
+variable "kms_key_arn" { type = string }
 
 variable "log_retention_days" {
   type    = number
-  default = 2557
+  default = 365
 }
 
 variable "lambda_runtime" {
-  type = string
+  type    = string
+  default = "python3.12"
 }
 
 variable "default_tags" {
@@ -50,8 +47,309 @@ variable "default_tags" {
   default = {}
 }
 
+# ---------------------------------------------------------------------------
+# Legacy inputs (synthesised into `channels` if `channels` is empty)
+# ---------------------------------------------------------------------------
+
+variable "notification_emails" {
+  description = "Legacy: emails for SNS subscription. Prefer channels.email."
+  type        = list(string)
+  default     = []
+}
+
+variable "slack_webhook_url" {
+  description = "Legacy single-Slack-webhook. Prefer channels.slack."
+  type        = string
+  default     = null
+  sensitive   = true
+}
+
+variable "teams_webhook_url" {
+  description = "Legacy single-Teams-webhook. Prefer channels.teams."
+  type        = string
+  default     = null
+  sensitive   = true
+}
+
+# ---------------------------------------------------------------------------
+# Multi-channel polymorphic schema
+# ---------------------------------------------------------------------------
+
+variable "channels" {
+  description = <<-EOT
+    Multi-channel destination configuration. Each channel-type list holds 0+
+    destinations, each with its own min_severity filter.
+
+    Severities (ascending): info | low | medium | high | critical
+    A channel with min_severity = "high" only receives alerts of severity
+    high or critical.
+
+    For each destination you can pass either:
+      - the inline secret value (webhook_url, integration_key, api_key) —
+        the module will create a Secrets Manager secret and reference its ARN
+      - or *_secret_arn — point at an existing secret you manage elsewhere
+
+    Example:
+      channels = {
+        slack = [
+          { webhook_url = "https://hooks.slack.com/services/...", label = "#finops",       min_severity = "info" },
+          { webhook_url = "https://hooks.slack.com/services/...", label = "#incidents",    min_severity = "high" },
+        ]
+        pagerduty = [
+          { integration_key = "abc...", label = "finops-oncall", min_severity = "high" },
+        ]
+        email = [
+          { addresses = ["finops@example.com"], min_severity = "info" },
+        ]
+      }
+  EOT
+  type = object({
+    email = optional(list(object({
+      addresses    = list(string)
+      min_severity = optional(string, "info")
+    })), [])
+
+    slack = optional(list(object({
+      webhook_url        = optional(string)
+      webhook_secret_arn = optional(string)
+      label              = optional(string, "slack")
+      min_severity       = optional(string, "info")
+    })), [])
+
+    teams = optional(list(object({
+      webhook_url        = optional(string)
+      webhook_secret_arn = optional(string)
+      label              = optional(string, "teams")
+      min_severity       = optional(string, "info")
+    })), [])
+
+    pagerduty = optional(list(object({
+      integration_key            = optional(string)
+      integration_key_secret_arn = optional(string)
+      label                      = optional(string, "pagerduty")
+      min_severity               = optional(string, "high")
+    })), [])
+
+    opsgenie = optional(list(object({
+      api_key            = optional(string)
+      api_key_secret_arn = optional(string)
+      label              = optional(string, "opsgenie")
+      eu_region          = optional(bool, false)
+      min_severity       = optional(string, "high")
+    })), [])
+
+    generic_webhooks = optional(list(object({
+      url            = optional(string)
+      url_secret_arn = optional(string)
+      label          = string
+      headers        = optional(map(string), {})
+      min_severity   = optional(string, "info")
+    })), [])
+
+    sqs = optional(list(object({
+      queue_arn    = string
+      label        = optional(string, "sqs")
+      min_severity = optional(string, "info")
+    })), [])
+  })
+  default = {}
+
+  validation {
+    condition = alltrue(concat(
+      [for c in coalesce(var.channels.slack, []) : contains(["info", "low", "medium", "high", "critical"], c.min_severity)],
+      [for c in coalesce(var.channels.teams, []) : contains(["info", "low", "medium", "high", "critical"], c.min_severity)],
+      [for c in coalesce(var.channels.pagerduty, []) : contains(["info", "low", "medium", "high", "critical"], c.min_severity)],
+      [for c in coalesce(var.channels.opsgenie, []) : contains(["info", "low", "medium", "high", "critical"], c.min_severity)],
+      [for c in coalesce(var.channels.email, []) : contains(["info", "low", "medium", "high", "critical"], c.min_severity)],
+      [for c in coalesce(var.channels.generic_webhooks, []) : contains(["info", "low", "medium", "high", "critical"], c.min_severity)],
+      [for c in coalesce(var.channels.sqs, []) : contains(["info", "low", "medium", "high", "critical"], c.min_severity)],
+    ))
+    error_message = "channels.*.min_severity must be one of: info, low, medium, high, critical."
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Deduplication
+# ---------------------------------------------------------------------------
+
+variable "deduplication" {
+  description = <<-EOT
+    Deduplication cache config. When two events with the same fingerprint
+    land within `window_minutes`, the second is suppressed (still audited).
+  EOT
+  type = object({
+    enabled            = optional(bool, true)
+    window_minutes     = optional(number, 60)
+    fingerprint_fields = optional(list(string), ["AlertName", "severity", "ResourceId"])
+  })
+  default = {}
+}
+
+# ---------------------------------------------------------------------------
+# Audit log
+# ---------------------------------------------------------------------------
+
+variable "audit_log" {
+  description = "Audit log config (DDB-backed). Records every dispatched event + outcome per channel."
+  type = object({
+    enabled        = optional(bool, true)
+    retention_days = optional(number, 365)
+  })
+  default = {}
+}
+
+data "aws_caller_identity" "current" {}
+data "aws_partition" "current" {}
+data "aws_region" "current" {}
+
 ###############################################################################
-# SNS topic
+# Local — synthesise legacy inputs into `channels`, flatten for resources
+###############################################################################
+
+locals {
+  # Legacy → new bridge. Only used when `channels` is empty.
+  legacy_channels = {
+    email = length(var.notification_emails) > 0 ? [
+      { addresses = var.notification_emails, min_severity = "info" }
+    ] : []
+    slack = var.slack_webhook_url == null ? [] : [
+      { webhook_url = var.slack_webhook_url, label = "slack-legacy", min_severity = "info", webhook_secret_arn = null }
+    ]
+    teams = var.teams_webhook_url == null ? [] : [
+      { webhook_url = var.teams_webhook_url, label = "teams-legacy", min_severity = "info", webhook_secret_arn = null }
+    ]
+    pagerduty        = []
+    opsgenie         = []
+    generic_webhooks = []
+    sqs              = []
+  }
+
+  channels_empty = (
+    length(coalesce(var.channels.email, [])) == 0 &&
+    length(coalesce(var.channels.slack, [])) == 0 &&
+    length(coalesce(var.channels.teams, [])) == 0 &&
+    length(coalesce(var.channels.pagerduty, [])) == 0 &&
+    length(coalesce(var.channels.opsgenie, [])) == 0 &&
+    length(coalesce(var.channels.generic_webhooks, [])) == 0 &&
+    length(coalesce(var.channels.sqs, [])) == 0
+  )
+
+  effective_channels = local.channels_empty ? local.legacy_channels : {
+    email            = coalesce(var.channels.email, [])
+    slack            = coalesce(var.channels.slack, [])
+    teams            = coalesce(var.channels.teams, [])
+    pagerduty        = coalesce(var.channels.pagerduty, [])
+    opsgenie         = coalesce(var.channels.opsgenie, [])
+    generic_webhooks = coalesce(var.channels.generic_webhooks, [])
+    sqs              = coalesce(var.channels.sqs, [])
+  }
+
+  # Email destinations expanded to one (channel × address) pair per row.
+  email_subscriptions = flatten([
+    for ch in local.effective_channels.email : [
+      for addr in ch.addresses : { address = addr, min_severity = ch.min_severity }
+    ]
+  ])
+
+  # Channels needing a Secrets Manager secret (inline value provided).
+  slack_inline_secrets = {
+    for idx, ch in local.effective_channels.slack :
+    "slack-${idx}" => ch if ch.webhook_url != null
+  }
+  teams_inline_secrets = {
+    for idx, ch in local.effective_channels.teams :
+    "teams-${idx}" => ch if ch.webhook_url != null
+  }
+  pagerduty_inline_secrets = {
+    for idx, ch in local.effective_channels.pagerduty :
+    "pagerduty-${idx}" => ch if ch.integration_key != null
+  }
+  opsgenie_inline_secrets = {
+    for idx, ch in local.effective_channels.opsgenie :
+    "opsgenie-${idx}" => ch if ch.api_key != null
+  }
+  webhook_inline_secrets = {
+    for idx, ch in local.effective_channels.generic_webhooks :
+    "webhook-${idx}" => ch if ch.url != null
+  }
+
+  any_dispatch_channels = (
+    length(local.effective_channels.slack) > 0 ||
+    length(local.effective_channels.teams) > 0 ||
+    length(local.effective_channels.pagerduty) > 0 ||
+    length(local.effective_channels.opsgenie) > 0 ||
+    length(local.effective_channels.generic_webhooks) > 0 ||
+    length(local.effective_channels.sqs) > 0
+  )
+
+  # Dispatcher consumes a "manifest" — all channels + their resolved secret
+  # ARNs — as a JSON env var.
+  dispatcher_manifest = jsonencode({
+    slack = [
+      for idx, ch in local.effective_channels.slack : {
+        label              = ch.label
+        min_severity       = ch.min_severity
+        webhook_secret_arn = ch.webhook_url != null ? aws_secretsmanager_secret.slack[tostring(idx)].arn : ch.webhook_secret_arn
+      }
+    ]
+    teams = [
+      for idx, ch in local.effective_channels.teams : {
+        label              = ch.label
+        min_severity       = ch.min_severity
+        webhook_secret_arn = ch.webhook_url != null ? aws_secretsmanager_secret.teams[tostring(idx)].arn : ch.webhook_secret_arn
+      }
+    ]
+    pagerduty = [
+      for idx, ch in local.effective_channels.pagerduty : {
+        label                      = ch.label
+        min_severity               = ch.min_severity
+        integration_key_secret_arn = ch.integration_key != null ? aws_secretsmanager_secret.pagerduty[tostring(idx)].arn : ch.integration_key_secret_arn
+      }
+    ]
+    opsgenie = [
+      for idx, ch in local.effective_channels.opsgenie : {
+        label              = ch.label
+        min_severity       = ch.min_severity
+        eu_region          = ch.eu_region
+        api_key_secret_arn = ch.api_key != null ? aws_secretsmanager_secret.opsgenie[tostring(idx)].arn : ch.api_key_secret_arn
+      }
+    ]
+    generic_webhooks = [
+      for idx, ch in local.effective_channels.generic_webhooks : {
+        label          = ch.label
+        min_severity   = ch.min_severity
+        headers        = ch.headers
+        url_secret_arn = ch.url != null ? aws_secretsmanager_secret.webhook[tostring(idx)].arn : ch.url_secret_arn
+      }
+    ]
+    sqs = [
+      for ch in local.effective_channels.sqs : {
+        label        = ch.label
+        min_severity = ch.min_severity
+        queue_arn    = ch.queue_arn
+      }
+    ]
+  })
+
+  # All secret ARNs the dispatcher must read at runtime.
+  all_secret_arns = concat(
+    [for s in aws_secretsmanager_secret.slack : s.arn],
+    [for s in aws_secretsmanager_secret.teams : s.arn],
+    [for s in aws_secretsmanager_secret.pagerduty : s.arn],
+    [for s in aws_secretsmanager_secret.opsgenie : s.arn],
+    [for s in aws_secretsmanager_secret.webhook : s.arn],
+    [for ch in local.effective_channels.slack : ch.webhook_secret_arn if ch.webhook_secret_arn != null],
+    [for ch in local.effective_channels.teams : ch.webhook_secret_arn if ch.webhook_secret_arn != null],
+    [for ch in local.effective_channels.pagerduty : ch.integration_key_secret_arn if ch.integration_key_secret_arn != null],
+    [for ch in local.effective_channels.opsgenie : ch.api_key_secret_arn if ch.api_key_secret_arn != null],
+    [for ch in local.effective_channels.generic_webhooks : ch.url_secret_arn if ch.url_secret_arn != null],
+  )
+
+  sqs_target_arns = [for ch in local.effective_channels.sqs : ch.queue_arn]
+}
+
+###############################################################################
+# SNS topic — the events bus
 ###############################################################################
 
 resource "aws_sns_topic" "alerts" {
@@ -61,8 +359,6 @@ resource "aws_sns_topic" "alerts" {
   tags = var.default_tags
 }
 
-# Allow the AWS services that publish events (Budgets, Cost Anomaly Detection,
-# EventBridge, CloudWatch) to publish to this topic.
 resource "aws_sns_topic_policy" "alerts" {
   arn    = aws_sns_topic.alerts.arn
   policy = data.aws_iam_policy_document.alerts.json
@@ -102,219 +398,308 @@ data "aws_iam_policy_document" "alerts" {
   }
 }
 
-data "aws_caller_identity" "current" {}
-data "aws_partition" "current" {}
-data "aws_region" "current" {}
-
 ###############################################################################
-# Email subscriptions
+# Email subscriptions (one per address, native SNS — no Lambda hop)
 ###############################################################################
 
 resource "aws_sns_topic_subscription" "email" {
-  for_each = toset(var.notification_emails)
+  for_each = { for s in local.email_subscriptions : s.address => s }
 
   topic_arn = aws_sns_topic.alerts.arn
   protocol  = "email"
-  endpoint  = each.value
+  endpoint  = each.value.address
 }
 
 ###############################################################################
-# Slack / Teams notifier Lambda
-#
-# A single Lambda handles both Slack and Teams. Webhooks are passed as
-# encrypted environment variables; the function picks the right adapter
-# per message.
+# Secrets Manager — one secret per inline-supplied webhook / key
 ###############################################################################
 
-locals {
-  deploy_chat_notifier = var.slack_webhook_url != null || var.teams_webhook_url != null
-}
+resource "aws_secretsmanager_secret" "slack" {
+  for_each = local.slack_inline_secrets
 
-###############################################################################
-# Webhook URLs in Secrets Manager
-#
-# Webhooks are write-once, read-at-runtime. Storing them in Secrets Manager
-# (KMS-encrypted with the framework CMK) gives:
-#   - rotation hooks (you can rotate the URL without redeploying the Lambda)
-#   - auditable access via CloudTrail data events
-#   - separation between IaC state and the secret material itself
-#
-# A 30-day recovery window protects against accidental destroy.
-###############################################################################
-
-resource "aws_secretsmanager_secret" "slack_webhook" {
-  count = var.slack_webhook_url == null ? 0 : 1
-
-  name                    = "${var.name_prefix}-slack-webhook-url"
-  description             = "Slack incoming webhook URL for the FinOps chat-notifier Lambda."
+  name                    = "${var.name_prefix}-channel-${each.key}"
+  description             = "Slack webhook for channel '${each.value.label}'"
   kms_key_id              = var.kms_key_arn
   recovery_window_in_days = 30
-
-  tags = var.default_tags
+  tags                    = var.default_tags
 }
 
-resource "aws_secretsmanager_secret_version" "slack_webhook" {
-  count = var.slack_webhook_url == null ? 0 : 1
-
-  secret_id     = aws_secretsmanager_secret.slack_webhook[0].id
-  secret_string = var.slack_webhook_url
+resource "aws_secretsmanager_secret_version" "slack" {
+  for_each      = local.slack_inline_secrets
+  secret_id     = aws_secretsmanager_secret.slack[each.key].id
+  secret_string = each.value.webhook_url
 }
 
-resource "aws_secretsmanager_secret" "teams_webhook" {
-  count = var.teams_webhook_url == null ? 0 : 1
+resource "aws_secretsmanager_secret" "teams" {
+  for_each = local.teams_inline_secrets
 
-  name                    = "${var.name_prefix}-teams-webhook-url"
-  description             = "Microsoft Teams incoming webhook URL for the FinOps chat-notifier Lambda."
+  name                    = "${var.name_prefix}-channel-${each.key}"
+  description             = "Teams webhook for channel '${each.value.label}'"
   kms_key_id              = var.kms_key_arn
   recovery_window_in_days = 30
+  tags                    = var.default_tags
+}
+
+resource "aws_secretsmanager_secret_version" "teams" {
+  for_each      = local.teams_inline_secrets
+  secret_id     = aws_secretsmanager_secret.teams[each.key].id
+  secret_string = each.value.webhook_url
+}
+
+resource "aws_secretsmanager_secret" "pagerduty" {
+  for_each = local.pagerduty_inline_secrets
+
+  name                    = "${var.name_prefix}-channel-${each.key}"
+  description             = "PagerDuty integration key for channel '${each.value.label}'"
+  kms_key_id              = var.kms_key_arn
+  recovery_window_in_days = 30
+  tags                    = var.default_tags
+}
+
+resource "aws_secretsmanager_secret_version" "pagerduty" {
+  for_each      = local.pagerduty_inline_secrets
+  secret_id     = aws_secretsmanager_secret.pagerduty[each.key].id
+  secret_string = each.value.integration_key
+}
+
+resource "aws_secretsmanager_secret" "opsgenie" {
+  for_each = local.opsgenie_inline_secrets
+
+  name                    = "${var.name_prefix}-channel-${each.key}"
+  description             = "Opsgenie API key for channel '${each.value.label}'"
+  kms_key_id              = var.kms_key_arn
+  recovery_window_in_days = 30
+  tags                    = var.default_tags
+}
+
+resource "aws_secretsmanager_secret_version" "opsgenie" {
+  for_each      = local.opsgenie_inline_secrets
+  secret_id     = aws_secretsmanager_secret.opsgenie[each.key].id
+  secret_string = each.value.api_key
+}
+
+resource "aws_secretsmanager_secret" "webhook" {
+  for_each = local.webhook_inline_secrets
+
+  name                    = "${var.name_prefix}-channel-${each.key}"
+  description             = "Generic webhook URL for channel '${each.value.label}'"
+  kms_key_id              = var.kms_key_arn
+  recovery_window_in_days = 30
+  tags                    = var.default_tags
+}
+
+resource "aws_secretsmanager_secret_version" "webhook" {
+  for_each      = local.webhook_inline_secrets
+  secret_id     = aws_secretsmanager_secret.webhook[each.key].id
+  secret_string = each.value.url
+}
+
+###############################################################################
+# DynamoDB — audit log + dedup cache (single table)
+#
+# PK = "DEDUP#<fingerprint-sha>"  →  short-TTL row, cache for suppression
+# PK = "AUDIT#<iso-ts>-<random>"  →  audit log row for each dispatched event
+###############################################################################
+
+resource "aws_dynamodb_table" "events" {
+  count = (var.audit_log.enabled != false || var.deduplication.enabled != false) ? 1 : 0
+
+  name         = "${var.name_prefix}-alerting-events"
+  billing_mode = "PAY_PER_REQUEST"
+  # NOTE: hash_key/range_key are deprecated in favor of key_schema in newer
+  # AWS provider versions, but the replacement syntax is still in flux.
+  # Apply works fine with the deprecation warning. Migrate when stable.
+  hash_key = "PK"
+
+  attribute {
+    name = "PK"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "ExpireAt"
+    enabled        = true
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = var.kms_key_arn
+  }
 
   tags = var.default_tags
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
-resource "aws_secretsmanager_secret_version" "teams_webhook" {
-  count = var.teams_webhook_url == null ? 0 : 1
+###############################################################################
+# Dispatcher Lambda — replaces the old chat-notifier
+###############################################################################
 
-  secret_id     = aws_secretsmanager_secret.teams_webhook[0].id
-  secret_string = var.teams_webhook_url
+resource "aws_sqs_queue" "dispatcher_dlq" {
+  count = local.any_dispatch_channels ? 1 : 0
+
+  name                      = "${var.name_prefix}-dispatcher-dlq"
+  message_retention_seconds = 1209600 # 14d
+  sqs_managed_sse_enabled   = true
+  tags                      = var.default_tags
 }
 
-data "archive_file" "chat_notifier" {
-  count       = local.deploy_chat_notifier ? 1 : 0
-  type        = "zip"
-  source_file = "${path.module}/lambda/chat_notifier.py"
-  output_path = "${path.module}/lambda/chat_notifier.zip"
-}
+resource "aws_iam_role" "dispatcher" {
+  count = local.any_dispatch_channels ? 1 : 0
 
-resource "aws_iam_role" "chat_notifier" {
-  count = local.deploy_chat_notifier ? 1 : 0
-
-  name = "${var.name_prefix}-chat-notifier-role"
+  name = "${var.name_prefix}-dispatcher-role"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect = "Allow"
+      Effect    = "Allow"
       Principal = { Service = "lambda.amazonaws.com" }
-      Action = "sts:AssumeRole"
+      Action    = "sts:AssumeRole"
     }]
   })
   tags = var.default_tags
 }
 
-resource "aws_iam_role_policy_attachment" "chat_notifier_basic" {
-  count      = local.deploy_chat_notifier ? 1 : 0
-  role       = aws_iam_role.chat_notifier[0].name
+resource "aws_iam_role_policy_attachment" "dispatcher_basic" {
+  count      = local.any_dispatch_channels ? 1 : 0
+  role       = aws_iam_role.dispatcher[0].name
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
-locals {
-  webhook_secret_arns = compact([
-    var.slack_webhook_url == null ? null : try(aws_secretsmanager_secret.slack_webhook[0].arn, null),
-    var.teams_webhook_url == null ? null : try(aws_secretsmanager_secret.teams_webhook[0].arn, null),
-  ])
-}
+resource "aws_iam_role_policy" "dispatcher" {
+  count = local.any_dispatch_channels ? 1 : 0
 
-# KMS permission so the Lambda can decrypt secret values.
-# SecretsManager permission scoped to the framework's two webhook secrets.
-# SQS DLQ permission so failed invocations route to the dead-letter queue.
-resource "aws_iam_role_policy" "chat_notifier_inline" {
-  count = local.deploy_chat_notifier ? 1 : 0
-  name  = "chat-notifier-inline"
-  role  = aws_iam_role.chat_notifier[0].id
+  name = "dispatcher"
+  role = aws_iam_role.dispatcher[0].id
+
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
-      {
-        Effect   = "Allow"
-        Action   = ["kms:Decrypt"]
-        Resource = var.kms_key_arn
-      },
-      {
+    Statement = concat(
+      [
+        {
+          Effect   = "Allow"
+          Action   = ["kms:Decrypt", "kms:GenerateDataKey"]
+          Resource = var.kms_key_arn
+        },
+        {
+          Effect   = "Allow"
+          Action   = ["sqs:SendMessage"]
+          Resource = aws_sqs_queue.dispatcher_dlq[0].arn
+        },
+      ],
+      length(local.all_secret_arns) > 0 ? [{
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
-        Resource = local.webhook_secret_arns
-      },
-      {
+        Resource = local.all_secret_arns
+      }] : [],
+      length(aws_dynamodb_table.events) > 0 ? [{
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem"]
+        Resource = aws_dynamodb_table.events[0].arn
+      }] : [],
+      length(local.sqs_target_arns) > 0 ? [{
         Effect   = "Allow"
         Action   = ["sqs:SendMessage"]
-        Resource = aws_sqs_queue.chat_notifier_dlq[0].arn
-      },
-    ]
+        Resource = local.sqs_target_arns
+      }] : [],
+      [{
+        Effect   = "Allow"
+        Action   = ["cloudwatch:PutMetricData"]
+        Resource = "*"
+      }],
+    )
   })
 }
 
-###############################################################################
-# Dead-letter queue for failed chat-notifier invocations.
-###############################################################################
+data "archive_file" "dispatcher" {
+  count       = local.any_dispatch_channels ? 1 : 0
+  type        = "zip"
+  output_path = "${path.module}/lambda/dispatcher.zip"
 
-resource "aws_sqs_queue" "chat_notifier_dlq" {
-  count = local.deploy_chat_notifier ? 1 : 0
+  source {
+    content  = file("${path.module}/lambda/dispatcher.py")
+    filename = "dispatcher.py"
+  }
 
-  name                      = "${var.name_prefix}-chat-notifier-dlq"
-  message_retention_seconds = 1209600 # 14 days
-  sqs_managed_sse_enabled   = true
-
-  tags = var.default_tags
+  source {
+    content  = file("${path.module}/lambda/channels.py")
+    filename = "channels.py"
+  }
 }
 
-resource "aws_cloudwatch_log_group" "chat_notifier" {
-  count             = local.deploy_chat_notifier ? 1 : 0
-  name              = "/aws/lambda/${var.name_prefix}-chat-notifier"
+resource "aws_cloudwatch_log_group" "dispatcher" {
+  count             = local.any_dispatch_channels ? 1 : 0
+  name              = "/aws/lambda/${var.name_prefix}-dispatcher"
   retention_in_days = var.log_retention_days
   kms_key_id        = var.kms_key_arn
   tags              = var.default_tags
 }
 
-resource "aws_lambda_function" "chat_notifier" {
-  count = local.deploy_chat_notifier ? 1 : 0
+resource "aws_lambda_function" "dispatcher" {
+  count = local.any_dispatch_channels ? 1 : 0
 
-  function_name    = "${var.name_prefix}-chat-notifier"
-  description      = "Forwards FinOps SNS alerts to Slack and/or Teams"
-  role             = aws_iam_role.chat_notifier[0].arn
-  filename         = data.archive_file.chat_notifier[0].output_path
-  source_code_hash = data.archive_file.chat_notifier[0].output_base64sha256
-  handler          = "chat_notifier.handler"
+  function_name    = "${var.name_prefix}-dispatcher"
+  description      = "Multi-channel event dispatcher with severity routing + dedup + audit"
+  role             = aws_iam_role.dispatcher[0].arn
+  filename         = data.archive_file.dispatcher[0].output_path
+  source_code_hash = data.archive_file.dispatcher[0].output_base64sha256
+  handler          = "dispatcher.handler"
   runtime          = var.lambda_runtime
   timeout          = 30
   memory_size      = 256
-
-  kms_key_arn = var.kms_key_arn
+  kms_key_arn      = var.kms_key_arn
 
   environment {
     variables = {
-      # Lambda receives ARNs, not URLs. The Python code resolves them at
-      # runtime via Secrets Manager and caches the values per warm container.
-      SLACK_WEBHOOK_SECRET_ARN = var.slack_webhook_url == null ? "" : aws_secretsmanager_secret.slack_webhook[0].arn
-      TEAMS_WEBHOOK_SECRET_ARN = var.teams_webhook_url == null ? "" : aws_secretsmanager_secret.teams_webhook[0].arn
+      CHANNEL_MANIFEST     = local.dispatcher_manifest
+      DEDUP_ENABLED        = tostring(coalesce(var.deduplication.enabled, true))
+      DEDUP_WINDOW_MINS    = tostring(coalesce(var.deduplication.window_minutes, 60))
+      DEDUP_FINGERPRINT    = jsonencode(coalesce(var.deduplication.fingerprint_fields, ["AlertName", "severity", "ResourceId"]))
+      AUDIT_ENABLED        = tostring(coalesce(var.audit_log.enabled, true))
+      AUDIT_RETENTION_DAYS = tostring(coalesce(var.audit_log.retention_days, 365))
+      EVENTS_TABLE_NAME    = length(aws_dynamodb_table.events) > 0 ? aws_dynamodb_table.events[0].name : ""
+      METRIC_NAMESPACE     = "FinOps/Alerting"
     }
   }
 
   dead_letter_config {
-    target_arn = aws_sqs_queue.chat_notifier_dlq[0].arn
+    target_arn = aws_sqs_queue.dispatcher_dlq[0].arn
   }
 
-  depends_on = [aws_cloudwatch_log_group.chat_notifier]
+  depends_on = [aws_cloudwatch_log_group.dispatcher]
   tags       = var.default_tags
 }
 
+resource "aws_lambda_permission" "dispatcher_sns" {
+  count         = local.any_dispatch_channels ? 1 : 0
+  statement_id  = "AllowSNSInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.dispatcher[0].function_name
+  principal     = "sns.amazonaws.com"
+  source_arn    = aws_sns_topic.alerts.arn
+}
+
+resource "aws_sns_topic_subscription" "dispatcher" {
+  count     = local.any_dispatch_channels ? 1 : 0
+  topic_arn = aws_sns_topic.alerts.arn
+  protocol  = "lambda"
+  endpoint  = aws_lambda_function.dispatcher[0].arn
+}
+
 ###############################################################################
-# CloudWatch alarms on the chat-notifier Lambda.
-#
-# Both fire to the events topic. If the chat notifier itself is the failure
-# point, email subscribers still receive the alarm directly from SNS.
-#
-# Note on the apparent cycle: the chat-notifier subscribes to this same topic
-# AND its error alarm publishes to it. This is not an infinite loop —
-# CloudWatch alarms only fire on state transitions (OK → ALARM, ALARM → OK),
-# not continuously. A broken notifier produces a single alarm message that
-# fails to deliver and lands in the notifier's own DLQ; email subscribers
-# still receive the alarm via direct SNS delivery.
+# Alarms on the dispatcher itself
 ###############################################################################
 
-resource "aws_cloudwatch_metric_alarm" "chat_notifier_errors" {
-  count = local.deploy_chat_notifier ? 1 : 0
+resource "aws_cloudwatch_metric_alarm" "dispatcher_errors" {
+  count = local.any_dispatch_channels ? 1 : 0
 
-  alarm_name          = "${var.name_prefix}-chat-notifier-errors"
-  alarm_description   = "FinOps chat-notifier Lambda errors."
+  alarm_name          = "${var.name_prefix}-dispatcher-errors"
+  alarm_description   = "Event dispatcher Lambda errors."
   namespace           = "AWS/Lambda"
   metric_name         = "Errors"
   statistic           = "Sum"
@@ -323,21 +708,18 @@ resource "aws_cloudwatch_metric_alarm" "chat_notifier_errors" {
   threshold           = 0
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
-
-  dimensions = {
-    FunctionName = aws_lambda_function.chat_notifier[0].function_name
-  }
-
-  alarm_actions = [aws_sns_topic.alerts.arn]
-  ok_actions    = [aws_sns_topic.alerts.arn]
-  tags          = var.default_tags
+  dimensions          = { FunctionName = aws_lambda_function.dispatcher[0].function_name }
+  # Note: This alarm cannot publish back to the same SNS topic the dispatcher
+  # consumes (would loop). It's a CloudWatch-only alarm; subscribers can
+  # discover it via DescribeAlarms or watch for the metric directly.
+  tags = var.default_tags
 }
 
-resource "aws_cloudwatch_metric_alarm" "chat_notifier_dlq_depth" {
-  count = local.deploy_chat_notifier ? 1 : 0
+resource "aws_cloudwatch_metric_alarm" "dispatcher_dlq_depth" {
+  count = local.any_dispatch_channels ? 1 : 0
 
-  alarm_name          = "${var.name_prefix}-chat-notifier-dlq-depth"
-  alarm_description   = "Messages accumulating in the chat-notifier Lambda DLQ."
+  alarm_name          = "${var.name_prefix}-dispatcher-dlq-depth"
+  alarm_description   = "Messages accumulating in the event dispatcher DLQ."
   namespace           = "AWS/SQS"
   metric_name         = "ApproximateNumberOfMessagesVisible"
   statistic           = "Maximum"
@@ -346,57 +728,67 @@ resource "aws_cloudwatch_metric_alarm" "chat_notifier_dlq_depth" {
   threshold           = 0
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
-
-  dimensions = {
-    QueueName = aws_sqs_queue.chat_notifier_dlq[0].name
-  }
-
-  alarm_actions = [aws_sns_topic.alerts.arn]
-  tags          = var.default_tags
-}
-
-resource "aws_lambda_permission" "chat_notifier_sns" {
-  count         = local.deploy_chat_notifier ? 1 : 0
-  statement_id  = "AllowSNSInvoke"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.chat_notifier[0].function_name
-  principal     = "sns.amazonaws.com"
-  source_arn    = aws_sns_topic.alerts.arn
-}
-
-resource "aws_sns_topic_subscription" "chat_notifier" {
-  count     = local.deploy_chat_notifier ? 1 : 0
-  topic_arn = aws_sns_topic.alerts.arn
-  protocol  = "lambda"
-  endpoint  = aws_lambda_function.chat_notifier[0].arn
+  dimensions          = { QueueName = aws_sqs_queue.dispatcher_dlq[0].name }
+  tags                = var.default_tags
 }
 
 ###############################################################################
-# Outputs
+# Outputs — the standalone-friendly contract
 ###############################################################################
 
 output "events_topic_arn" {
-  value = aws_sns_topic.alerts.arn
+  description = "ARN of the SNS topic publishers should write to."
+  value       = aws_sns_topic.alerts.arn
 }
 
 output "events_topic_name" {
-  value = aws_sns_topic.alerts.name
+  description = "Name of the SNS topic."
+  value       = aws_sns_topic.alerts.name
 }
 
+output "dispatcher_lambda_arn" {
+  description = "Dispatcher Lambda ARN (null if no dispatch channels configured)."
+  value       = local.any_dispatch_channels ? aws_lambda_function.dispatcher[0].arn : null
+}
+
+output "dispatcher_dlq_arn" {
+  description = "Dispatcher DLQ ARN."
+  value       = local.any_dispatch_channels ? aws_sqs_queue.dispatcher_dlq[0].arn : null
+}
+
+output "events_table_name" {
+  description = "DynamoDB table for audit log + dedup cache."
+  value       = length(aws_dynamodb_table.events) > 0 ? aws_dynamodb_table.events[0].name : null
+}
+
+output "channel_secret_arns" {
+  description = "Map of channel-key → Secrets Manager ARN (for channels where the inline URL/key was provided)."
+  value = merge(
+    { for k, s in aws_secretsmanager_secret.slack : k => s.arn },
+    { for k, s in aws_secretsmanager_secret.teams : k => s.arn },
+    { for k, s in aws_secretsmanager_secret.pagerduty : k => s.arn },
+    { for k, s in aws_secretsmanager_secret.opsgenie : k => s.arn },
+    { for k, s in aws_secretsmanager_secret.webhook : k => s.arn },
+  )
+}
+
+# Backward-compat output names (so root main.tf doesn't break).
 output "chat_notifier_lambda_arn" {
-  value = local.deploy_chat_notifier ? aws_lambda_function.chat_notifier[0].arn : null
+  description = "Backward-compat alias of dispatcher_lambda_arn."
+  value       = local.any_dispatch_channels ? aws_lambda_function.dispatcher[0].arn : null
 }
 
 output "chat_notifier_dlq_arn" {
-  value = local.deploy_chat_notifier ? aws_sqs_queue.chat_notifier_dlq[0].arn : null
+  description = "Backward-compat alias of dispatcher_dlq_arn."
+  value       = local.any_dispatch_channels ? aws_sqs_queue.dispatcher_dlq[0].arn : null
 }
 
 output "slack_webhook_secret_arn" {
-  description = "ARN of the Secrets Manager secret holding the Slack webhook URL (null if not configured)."
-  value       = var.slack_webhook_url == null ? null : aws_secretsmanager_secret.slack_webhook[0].arn
+  description = "Backward-compat: first Slack channel's secret ARN (null if none)."
+  value       = length(aws_secretsmanager_secret.slack) > 0 ? values(aws_secretsmanager_secret.slack)[0].arn : null
 }
 
 output "teams_webhook_secret_arn" {
-  description = "ARN of the Secrets Manager secret holding the Teams webhook URL (null if not configured)."
-  value       = var.teams_webhook_url == null ? null : aws_secretsmanager_secret.teams_webhook[0].arn
+  description = "Backward-compat: first Teams channel's secret ARN (null if none)."
+  value       = length(aws_secretsmanager_secret.teams) > 0 ? values(aws_secretsmanager_secret.teams)[0].arn : null
 }

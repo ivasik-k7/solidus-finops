@@ -12,7 +12,7 @@ A **pick-and-choose deployment**: enable exactly the modules you want, leave the
 - **KMS CMK** — encrypts S3, SNS, DynamoDB, Secrets Manager, CloudWatch Logs (always on)
 
 ❌ Disabled (one flag flip to enable)
-- cost-data-exports, anomaly-detection, optimization-services, instance-scheduler, savings-coverage-reporter, finops-metrics, cost-categories, untagged-cost-report
+- cost-data-exports, instance-scheduler, finops-metrics, tag_governance untagged-cost-report
 
 ## Module enable matrix
 
@@ -20,85 +20,61 @@ A **pick-and-choose deployment**: enable exactly the modules you want, leave the
 |---|---|---|---|
 | alerting (events bus) | — | always on | Required infrastructure; not disable-able |
 | KMS CMK | `create_kms_key` | `true` | Set `false` + provide `existing_kms_key_arn` to BYO |
-| cost-data-exports | `enable_cost_data_exports` | `true` | CUR 2.0 + FOCUS + Athena + Glue crawler. Required by finops-metrics + untagged-cost-report. |
-| anomaly-detection | `enable_anomaly_detection` | `true` | Cost Anomaly Detection service-level monitor |
-| cost-categories | _implicit_ — `var.cost_categories` | `{}` | Set non-empty map to provision |
-| tag-governance | `enable_tag_governance` | `true` | Config rules + drift + Resource Groups |
-| optimization-services | `enable_compute_optimizer` + `enable_cost_optimization_hub` | `true` + `true` | Both flags must be `false` to fully disable |
-| idle-resource-cleanup | `enable_idle_cleanup` | `false` | Off by default; this example turns it on |
-| instance-scheduler | `enable_instance_scheduler` | `false` | Off by default |
-| savings-coverage-reporter | `enable_savings_coverage_reporter` | `true` | Weekly RI/SP coverage digest |
-| finops-metrics | `enable_finops_metrics` | `true` | Requires `enable_cost_data_exports` + `enable_athena_workgroup` |
-| budgets (whole module) | _implicit_ — `var.budgets` | `{}` | Set non-empty map to provision |
-| budgets performance Lambda | `enable_budget_performance_tracking` | `true` | Inside the budgets module; only relevant when budgets is provisioned |
-| tag-governance untagged-cost report | `enable_untagged_cost_report` | `false` | Requires Athena |
-| tag-governance drift detection | `enable_tag_drift_detection` | `true` | EventBridge on `aws.tag` |
+| cost-data-exports | `cost_data_exports_enabled` | `true` | CUR 2.0 + FOCUS + Athena + Glue crawler. Required by finops-metrics + untagged-cost-report. |
+| tag-governance | `tag_governance_enabled` | `true` | Config rules + drift + Resource Groups |
+| idle-resource-cleanup | `idle_cleanup_enabled` | `false` | Off by default; this example turns it on |
+| instance-scheduler | `instance_scheduler_enabled` | `false` | Off by default |
+| finops-metrics | `finops_metrics_enabled` | `true` | Requires `cost_data_exports_enabled` + `cost_data_exports_athena_enabled` |
+| budgets (whole module) | _implicit_ — `var.budgets_items` | `{}` | Set non-empty map to provision |
+| budgets performance Lambda | `budgets_performance_tracking_enabled` | `true` | Inside the budgets module; only relevant when budgets is provisioned |
+| tag-governance untagged-cost report | `tag_governance_untagged_cost_report_enabled` | `false` | Requires Athena |
+| tag-governance drift detection | `tag_governance_drift_detection_enabled` | `true` | EventBridge on `aws.tag` |
 
 ## Enabling a disabled module — playbook
 
 ### …add cost-data-exports + finops-metrics (full FinOps stack)
 ```hcl
-enable_cost_data_exports = true
-enable_focus_export      = true
-enable_athena_workgroup  = true
-enable_finops_metrics    = true
+cost_data_exports_enabled        = true
+cost_data_exports_focus_enabled  = true
+cost_data_exports_athena_enabled = true
+finops_metrics_enabled           = true
 ```
 First-apply note: the Glue crawler + first CUR delivery take **~24–48h** before Athena queries return data. Until then, finops-metrics + untagged-cost reports are non-functional (but no errors).
 
-### …add anomaly detection
-```hcl
-enable_anomaly_detection  = true
-anomaly_min_impact_amount = 100
-anomaly_min_impact_pct    = 20
-```
-First-month note: AWS Cost Anomaly Detection needs ~14 days to build a usage baseline.
-
 ### …add instance scheduler
 ```hcl
-enable_instance_scheduler         = true
+instance_scheduler_enabled        = true
 instance_scheduler_opt_in_tag_key = "Schedule"
 instance_scheduler_schedules = {
   office-hours-cet = {
-    start_cron = "0 6 ? * MON-FRI *"
-    stop_cron  = "0 18 ? * MON-FRI *"
+    days     = ["MON", "TUE", "WED", "THU", "FRI"]
+    start    = "08:00"
+    stop     = "18:00"
+    timezone = "Europe/Berlin"
   }
 }
 ```
 Tag your EC2 instances `Schedule=office-hours-cet` to opt them in.
 
-### …add cost categories + cost-category-scoped budgets
+### …add a tag-governance untagged-cost report (dollarize the tag gap)
 ```hcl
-cost_categories = {
-  BusinessUnit = {
-    default_value = "unallocated"
-    rules = [
-      { value = "retail", rule = { tags = { key = "BusinessUnit", values = ["retail"], match_options = ["EQUALS"] } } },
-    ]
-  }
-}
+# Requires cost-data-exports + Athena to be on:
+cost_data_exports_enabled                        = true
+cost_data_exports_athena_enabled                 = true
+tag_governance_untagged_cost_report_enabled      = true
+tag_governance_untagged_cost_alarm_threshold_usd = 5000
+```
 
-budgets = merge(local.existing_budgets, {
+### …add a tag-scoped budget
+```hcl
+budgets_items = merge(local.existing_budgets, {
   retail_monthly = {
-    scope  = "cost_category"
+    scope  = "tag"
     amount = 50000
-    target = { category_name = "BusinessUnit", category_value = "retail" }
+    target = { tag_key = "BusinessUnit", tag_value = "retail" }
   }
 })
 ```
-
-### …add savings coverage reporter
-```hcl
-enable_savings_coverage_reporter = true
-savings_coverage_target_pct      = 70
-```
-Most useful once you have a non-trivial RI/SP footprint (≥ $10k/mo committed).
-
-### …add Compute Optimizer + Cost Optimization Hub
-```hcl
-enable_compute_optimizer     = true
-enable_cost_optimization_hub = true
-```
-Both free.
 
 ## Run it
 
@@ -110,8 +86,8 @@ terraform apply
 ```
 
 In TFE, point the workspace's working directory at `examples/selective` and set:
-- `notification_emails` — list of emails
-- `slack_webhook_url` / `teams_webhook_url` — sensitive (uncomment in main.tf)
+- `alerting_legacy_emails` — list of emails
+- `alerting_slack_webhook_url` / `alerting_teams_webhook_url` — sensitive (uncomment in main.tf)
 
 ## Cost expectation for this configuration
 
@@ -120,7 +96,7 @@ See [docs/COST_ESTIMATE.md](../../docs/COST_ESTIMATE.md) for the full breakdown.
 | Component | Monthly |
 |---|---|
 | KMS + Secrets Manager + budgets baseline | ~$3 |
-| Budgets (5 budgets) | ~$1.86 (3 paid × $0.62) |
+| Budgets (3 budgets) | ~$0.62 (1 paid × $0.62) |
 | DynamoDB (budgets + idle-cleanup state tables, on-demand) | <$1 |
 | Lambda compute (4 active Lambdas) | $0 (free tier) |
 | CloudWatch (metrics + alarms + dashboards) | ~$1 |

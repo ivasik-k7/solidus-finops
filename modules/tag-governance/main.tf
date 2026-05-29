@@ -27,9 +27,9 @@
 # Inputs — core compliance layer
 ###############################################################################
 
-variable "name_prefix"        { type = string }
-variable "events_topic_arn"   { type = string }
-variable "kms_key_arn"        { type = string }
+variable "name_prefix" { type = string }
+variable "events_topic_arn" { type = string }
+variable "kms_key_arn" { type = string }
 variable "log_retention_days" { type = number }
 variable "lambda_runtime" {
   type    = string
@@ -43,7 +43,7 @@ variable "required_tags" {
   }))
 }
 
-variable "resource_types"          { type = list(string) }
+variable "resource_types" { type = list(string) }
 variable "record_global_resources" {
   description = "If true, the Config recorder includes global resource types (IAM, CloudFront, Route53)."
   type        = bool
@@ -216,11 +216,11 @@ resource "aws_s3_bucket_policy" "config" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "AWSConfigBucketPermissionsCheck"
-        Effect = "Allow"
+        Sid       = "AWSConfigBucketPermissionsCheck"
+        Effect    = "Allow"
         Principal = { Service = "config.amazonaws.com" }
-        Action = ["s3:GetBucketAcl", "s3:ListBucket"]
-        Resource = aws_s3_bucket.config[0].arn
+        Action    = ["s3:GetBucketAcl", "s3:ListBucket"]
+        Resource  = aws_s3_bucket.config[0].arn
         Condition = {
           StringEquals = {
             "aws:SourceAccount" = data.aws_caller_identity.current.account_id
@@ -228,11 +228,11 @@ resource "aws_s3_bucket_policy" "config" {
         }
       },
       {
-        Sid    = "AWSConfigBucketDelivery"
-        Effect = "Allow"
+        Sid       = "AWSConfigBucketDelivery"
+        Effect    = "Allow"
         Principal = { Service = "config.amazonaws.com" }
-        Action = "s3:PutObject"
-        Resource = "${aws_s3_bucket.config[0].arn}/AWSLogs/${data.aws_caller_identity.current.account_id}/Config/*"
+        Action    = "s3:PutObject"
+        Resource  = "${aws_s3_bucket.config[0].arn}/AWSLogs/${data.aws_caller_identity.current.account_id}/Config/*"
         Condition = {
           StringEquals = {
             "s3:x-amz-acl"      = "bucket-owner-full-control"
@@ -250,9 +250,9 @@ resource "aws_iam_role" "config" {
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect = "Allow"
+      Effect    = "Allow"
       Principal = { Service = "config.amazonaws.com" }
-      Action = "sts:AssumeRole"
+      Action    = "sts:AssumeRole"
     }]
   })
   tags = var.default_tags
@@ -350,7 +350,7 @@ resource "aws_cloudwatch_event_rule" "tag_compliance" {
   description = "FinOps tag compliance change events"
 
   event_pattern = jsonencode({
-    source = ["aws.config"]
+    source        = ["aws.config"]
     "detail-type" = ["Config Rules Compliance Change"]
     detail = {
       configRuleName = [for r in aws_config_config_rule.required_tags : r.name]
@@ -570,7 +570,7 @@ resource "aws_iam_role_policy" "untagged_cost" {
       {
         Effect   = "Allow"
         Action   = ["ssm:PutParameter", "ssm:GetParameter"]
-        Resource = "arn:${data.aws_partition.current.partition}:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter${local.ssm_prefix}/*"
+        Resource = "arn:${data.aws_partition.current.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter${local.ssm_prefix}/*"
       },
       {
         Effect   = "Allow"
@@ -617,14 +617,14 @@ resource "aws_lambda_function" "untagged_cost" {
 
   environment {
     variables = {
-      METRIC_NAMESPACE     = local.metric_namespace
-      SSM_PREFIX           = local.ssm_prefix
-      ATHENA_WORKGROUP     = var.athena_workgroup_name
-      ATHENA_DATABASE      = var.athena_database_name
-      CUR_TABLE            = var.cur_table_name
-      MANDATORY_TAG_KEYS   = jsonencode(local.mandatory_tag_keys)
-      SNS_TOPIC_ARN        = var.events_topic_arn
-      TOP_N                = tostring(var.untagged_cost_top_n)
+      METRIC_NAMESPACE   = local.metric_namespace
+      SSM_PREFIX         = local.ssm_prefix
+      ATHENA_WORKGROUP   = var.athena_workgroup_name
+      ATHENA_DATABASE    = var.athena_database_name
+      CUR_TABLE          = var.cur_table_name
+      MANDATORY_TAG_KEYS = jsonencode(local.mandatory_tag_keys)
+      SNS_TOPIC_ARN      = var.events_topic_arn
+      TOP_N              = tostring(var.untagged_cost_top_n)
     }
   }
 
@@ -703,11 +703,11 @@ resource "aws_cloudwatch_metric_alarm" "untagged_cost_dlq_depth" {
 resource "aws_cloudwatch_metric_alarm" "untagged_cost_excess" {
   count = local.deploy_untagged_report && var.untagged_cost_alarm_threshold_usd != null ? 1 : 0
 
-  alarm_name          = "${var.name_prefix}-untagged-cost-excess"
-  alarm_description   = "Total cost of resources missing mandatory tags exceeds the configured ceiling — tag-discipline regression."
-  namespace           = local.metric_namespace
-  metric_name         = "TotalUntaggedCostUsd"
-  statistic           = "Maximum"
+  alarm_name        = "${var.name_prefix}-untagged-cost-excess"
+  alarm_description = "Total cost of resources missing mandatory tags exceeds the configured ceiling — tag-discipline regression."
+  namespace         = local.metric_namespace
+  metric_name       = "TotalUntaggedCostUsd"
+  statistic         = "Maximum"
   # Metric is emitted weekly; align the alarm period so missing-data flicker
   # doesn't bounce between OK and INSUFFICIENT_DATA mid-week.
   period              = 604800
