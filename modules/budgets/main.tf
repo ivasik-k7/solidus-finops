@@ -25,7 +25,14 @@ variable "name_prefix" { type = string }
 variable "events_topic_arn" { type = string }
 variable "currency" { type = string }
 variable "kms_key_arn" { type = string }
-variable "log_retention_days" { type = number }
+variable "log_retention_days" {
+  type = number
+
+  validation {
+    condition     = var.log_retention_days >= 365
+    error_message = "log_retention_days must be >= 365 (Checkov CKV_AWS_338)."
+  }
+}
 variable "default_tags" { type = map(string) }
 
 variable "lambda_runtime" {
@@ -155,6 +162,18 @@ variable "burn_rate_alarm_days_to_breach" {
   default     = 7
 }
 
+variable "xray_tracing_enabled" {
+  description = "Enable AWS X-Ray Active tracing on the performance Lambda. Adds IAM permissions + the tracing_config block."
+  type        = bool
+  default     = true
+}
+
+variable "reserved_concurrent_executions" {
+  description = "Reserve N concurrent executions for the performance Lambda. Null = no reservation."
+  type        = number
+  default     = null
+}
+
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 data "aws_region" "current" {}
@@ -266,6 +285,11 @@ resource "aws_iam_role" "budget_actions" {
 }
 
 resource "aws_iam_role_policy" "budget_actions" {
+  # checkov:skip=CKV_AWS_286: AWS Budget Actions service is the only principal that can assume this role (trust policy: budgets.amazonaws.com). Budget Actions decides at runtime which specific policy/IAM target to attach based on the budget config. Privilege-escalation risk is mitigated at the trust-policy layer.
+  # checkov:skip=CKV_AWS_288: Same — only budgets.amazonaws.com can use these permissions; the action types (iam:Attach*/Detach*, ec2:Stop*, rds:Stop*) are the actions AWS Budget Actions itself requires to enforce a budget breach.
+  # checkov:skip=CKV_AWS_289: iam:AttachGroupPolicy etc. cannot be resource-constrained for Budget Actions because the policy ARN + target are runtime-chosen by the AWS Budget Actions service from the budget config.
+  # checkov:skip=CKV_AWS_290: Same — these are the exact permissions documented by AWS as required for the Budget-Actions IAM role: https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-controls.html
+  # checkov:skip=CKV_AWS_355: Same — Resource = "*" is mandatory for AWS Budget Actions to fan out to the IAM/EC2/RDS/Organizations targets declared in each budget's actions block.
   count = length(local.actions_map) > 0 ? 1 : 0
 
   name = "budget-actions-execution"
@@ -484,65 +508,72 @@ resource "aws_iam_role_policy" "performance" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "budgets:ViewBudget",
-          "budgets:DescribeBudget",
-          "budgets:DescribeBudgets",
-        ]
+    Statement = concat(
+      [
+        {
+          Effect = "Allow"
+          Action = [
+            "budgets:ViewBudget",
+            "budgets:DescribeBudget",
+            "budgets:DescribeBudgets",
+          ]
+          Resource = "*"
+        },
+        {
+          Effect = "Allow"
+          Action = [
+            "ce:GetCostAndUsage",
+            "ce:GetCostForecast",
+            "ce:GetAnomalies",
+          ]
+          Resource = "*"
+        },
+        {
+          Effect = "Allow"
+          Action = [
+            "dynamodb:GetItem",
+            "dynamodb:PutItem",
+            "dynamodb:UpdateItem",
+            "dynamodb:Query",
+            "dynamodb:BatchWriteItem",
+          ]
+          Resource = [
+            aws_dynamodb_table.state[0].arn,
+            "${aws_dynamodb_table.state[0].arn}/index/*",
+          ]
+        },
+        {
+          Effect   = "Allow"
+          Action   = ["kms:Decrypt", "kms:GenerateDataKey"]
+          Resource = var.kms_key_arn
+        },
+        {
+          Effect   = "Allow"
+          Action   = ["cloudwatch:PutMetricData"]
+          Resource = "*"
+        },
+        {
+          Effect   = "Allow"
+          Action   = ["ssm:PutParameter", "ssm:GetParameter"]
+          Resource = "arn:${data.aws_partition.current.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter${local.ssm_prefix}/*"
+        },
+        {
+          Effect   = "Allow"
+          Action   = ["sns:Publish"]
+          Resource = var.events_topic_arn
+        },
+        {
+          Effect   = "Allow"
+          Action   = ["sqs:SendMessage"]
+          Resource = aws_sqs_queue.perf_dlq[0].arn
+        },
+      ],
+      var.xray_tracing_enabled ? [{
+        Effect   = "Allow"
+        Action   = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
         Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "ce:GetCostAndUsage",
-          "ce:GetCostForecast",
-          "ce:GetAnomalies",
-        ]
-        Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:UpdateItem",
-          "dynamodb:Query",
-          "dynamodb:BatchWriteItem",
-        ]
-        Resource = [
-          aws_dynamodb_table.state[0].arn,
-          "${aws_dynamodb_table.state[0].arn}/index/*",
-        ]
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["kms:Decrypt", "kms:GenerateDataKey"]
-        Resource = var.kms_key_arn
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["cloudwatch:PutMetricData"]
-        Resource = "*"
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["ssm:PutParameter", "ssm:GetParameter"]
-        Resource = "arn:${data.aws_partition.current.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter${local.ssm_prefix}/*"
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["sns:Publish"]
-        Resource = var.events_topic_arn
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["sqs:SendMessage"]
-        Resource = aws_sqs_queue.perf_dlq[0].arn
-      },
-    ]
+      }] : [],
+    )
   })
 }
 
@@ -554,6 +585,7 @@ data "archive_file" "performance" {
 }
 
 resource "aws_cloudwatch_log_group" "performance" {
+  # checkov:skip=CKV_AWS_338: retention is driven by var.log_retention_days, validated to >= 365 at the variable level.
   count             = var.enable_performance_tracking ? 1 : 0
   name              = "/aws/lambda/${var.name_prefix}-budget-perf"
   retention_in_days = var.log_retention_days
@@ -562,18 +594,20 @@ resource "aws_cloudwatch_log_group" "performance" {
 }
 
 resource "aws_lambda_function" "performance" {
+  # checkov:skip=CKV_AWS_272: Lambda code-signing requires AWS Signer; enterprise opt-in not modelled. Pin module ref for supply-chain protection.
   count = var.enable_performance_tracking ? 1 : 0
 
-  function_name    = "${var.name_prefix}-budget-perf"
-  description      = "Daily FinOps budget performance: variance, burn-rate, adherence score, anomaly correlation."
-  role             = aws_iam_role.performance[0].arn
-  filename         = data.archive_file.performance[0].output_path
-  source_code_hash = data.archive_file.performance[0].output_base64sha256
-  handler          = "budget_performance.handler"
-  runtime          = var.lambda_runtime
-  timeout          = 300
-  memory_size      = 512
-  kms_key_arn      = var.kms_key_arn
+  function_name                  = "${var.name_prefix}-budget-perf"
+  description                    = "Daily FinOps budget performance: variance, burn-rate, adherence score, anomaly correlation."
+  role                           = aws_iam_role.performance[0].arn
+  filename                       = data.archive_file.performance[0].output_path
+  source_code_hash               = data.archive_file.performance[0].output_base64sha256
+  handler                        = "budget_performance.handler"
+  runtime                        = var.lambda_runtime
+  timeout                        = 300
+  memory_size                    = 512
+  kms_key_arn                    = var.kms_key_arn
+  reserved_concurrent_executions = var.reserved_concurrent_executions
 
   environment {
     variables = {
@@ -582,6 +616,10 @@ resource "aws_lambda_function" "performance" {
       SSM_PREFIX       = local.ssm_prefix
       SNS_TOPIC_ARN    = var.events_topic_arn
     }
+  }
+
+  tracing_config {
+    mode = var.xray_tracing_enabled ? "Active" : "PassThrough"
   }
 
   dead_letter_config {

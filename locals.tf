@@ -42,7 +42,6 @@ locals {
 
   # Resolved KMS key — either created by the framework or supplied by the caller.
   kms_key_arn = var.create_kms_key ? aws_kms_key.finops[0].arn : var.existing_kms_key_arn
-  kms_key_id  = var.create_kms_key ? aws_kms_key.finops[0].key_id : null
 
   # Resolved cost-data bucket name. Defaults to <name_prefix>-cost-data-<account_id>
   # to avoid collisions across accounts.

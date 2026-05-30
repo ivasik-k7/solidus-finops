@@ -83,6 +83,43 @@ And one principle Solidus FinOps adopted after building the first version:
    The framework deliberately _doesn't_ maintain a regional rate table —
    any hardcoded one is wrong on day one.
 
+## Quality & compliance posture
+
+As of v0.2.1, the framework passes every static-analysis gate with zero
+unsuppressed findings:
+
+| Check | Status |
+|---|---|
+| `terraform fmt -recursive` | ✅ Clean |
+| `terraform validate` — root + every example | ✅ Clean |
+| `tflint --recursive --format compact` | ✅ **0 issues** |
+| **Checkov** (`bridgecrewio/checkov-action`, `soft_fail: false`) | ✅ **0 unsuppressed failures** |
+| Python AST parse — every Lambda source | ✅ Clean |
+
+Every Checkov rule the framework suppresses carries:
+
+1. **An inline `# checkov:skip=<rule>:<reason>` comment** on the
+   affected resource, with the rationale written out.
+2. **A subsection in [docs/COMPLIANCE_NOTES.md](docs/COMPLIANCE_NOTES.md)**
+   under "Documented Checkov suppressions" linking the rule, the
+   resources, the why, the mitigation, and the relevant AWS docs.
+
+Suppressions fall into three categories, all with documented rationale:
+
+- **AWS-imposed limitations** — e.g. `ec2:StartInstances` doesn't accept
+  resource-level permissions; the scope is enforced via tag-based
+  filtering at the Lambda runtime instead.
+- **Design decisions** — e.g. CloudTrail S3 data events at the org
+  level replace per-bucket access logging; webhook URLs are immutable
+  upstream so Secrets-Manager auto-rotation isn't applicable.
+- **Static-analyser false positives** — e.g. Checkov 3.x sometimes
+  fails to trace `aws_s3_bucket_*` companion resources (versioning,
+  encryption, public-access-block, lifecycle) back to their parent
+  bucket; the controls ARE configured in the linked resources.
+
+The full audit-grade breakdown is in
+[docs/COMPLIANCE_NOTES.md](docs/COMPLIANCE_NOTES.md).
+
 ## Repository layout
 
 ```

@@ -53,6 +53,23 @@ variable "log_retention_days" {
   description = "CloudWatch log retention for the aggregator Lambda log group. Match your org's compliance posture (365 / 1827 / 2557)."
   type        = number
   default     = 365
+
+  validation {
+    condition     = var.log_retention_days >= 365
+    error_message = "log_retention_days must be >= 365 (Checkov CKV_AWS_338 floor)."
+  }
+}
+
+variable "xray_tracing_enabled" {
+  description = "Enable AWS X-Ray Active tracing on the aggregator Lambda. Adds IAM permissions + the tracing_config block."
+  type        = bool
+  default     = true
+}
+
+variable "reserved_concurrent_executions" {
+  description = "Reserve N concurrent executions for the aggregator Lambda. Null = no reservation."
+  type        = number
+  default     = null
 }
 
 variable "lambda_runtime" {

@@ -212,19 +212,29 @@ grep -rln "enable_anomaly_detection\|enable_compute_optimizer\|cost_categories\b
 ## CI checks
 
 Pull requests run [.github/workflows/terraform-ci.yml](.github/workflows/terraform-ci.yml).
-Every job must pass before merge:
+**Every job is required to pass** — none are advisory. PRs that
+introduce a new finding without a documented inline suppression fail
+the build and cannot merge.
 
-| Job | What it checks |
-|---|---|
-| `terraform fmt` | `terraform fmt -check -recursive` is clean |
-| `terraform validate` | Root + every `examples/*` validate cleanly with `-backend=false` |
-| `tflint` | `tflint --recursive --format compact` reports zero issues |
-| `python-syntax` | Every `modules/*/lambda/*.py` parses |
-| `checkov` (advisory) | Security scan; failures are reviewed, not auto-blocking |
+| Job | What it checks | Threshold |
+|---|---|---|
+| `terraform fmt` | `terraform fmt -check -recursive` is clean | zero diffs |
+| `terraform validate` | Root + every `examples/*` validate cleanly with `-backend=false` | green on every path |
+| `tflint` | `tflint --recursive --format compact` | **zero issues** |
+| `python-syntax` | Every `modules/*/lambda/*.py` parses via `ast.parse` | every file parses |
+| `checkov` | `bridgecrewio/checkov-action` with `soft_fail: false` | **zero unsuppressed findings** |
+
+The framework is currently 100 % clean against all five gates — that's
+the bar for `main`. Every Checkov suppression in the codebase has an
+inline `# checkov:skip=<rule>:<reason>` comment AND a matching subsection
+in [docs/COMPLIANCE_NOTES.md](docs/COMPLIANCE_NOTES.md). If your PR adds
+a suppression, the PR template asks you to add the matching docs
+entry — reviewers will check.
 
 PRs that change a module's runtime contract (variables, outputs, Lambda
-env vars) must also update the module's `CHANGELOG.md` — the CI job
-checks the changelog file's mtime against the changed files.
+env vars) must also update the module's `CHANGELOG.md` — the
+`module-changelog-touched` pre-commit hook + the CI job both check
+this.
 
 ---
 

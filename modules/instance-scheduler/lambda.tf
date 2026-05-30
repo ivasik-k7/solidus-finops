@@ -28,6 +28,7 @@ data "archive_file" "discovery" {
 # ---------------------------------------------------------------------------
 
 resource "aws_cloudwatch_log_group" "scheduler" {
+  # checkov:skip=CKV_AWS_338: retention is driven by var.log_retention_days, validated to >= 365 at the variable level.
   name              = "/aws/lambda/${var.name_prefix}-scheduler"
   retention_in_days = var.log_retention_days
   kms_key_id        = var.kms_key_arn
@@ -36,6 +37,7 @@ resource "aws_cloudwatch_log_group" "scheduler" {
 }
 
 resource "aws_cloudwatch_log_group" "discovery" {
+  # checkov:skip=CKV_AWS_338: retention is driven by var.log_retention_days, validated to >= 365 at the variable level.
   count             = var.enable_discovery ? 1 : 0
   name              = "/aws/lambda/${var.name_prefix}-scheduler-discovery"
   retention_in_days = var.log_retention_days
@@ -49,19 +51,25 @@ resource "aws_cloudwatch_log_group" "discovery" {
 # ---------------------------------------------------------------------------
 
 resource "aws_lambda_function" "scheduler" {
-  function_name    = "${var.name_prefix}-scheduler"
-  description      = "Tag-driven multi-resource scheduler (EC2 + RDS + ASG). DDB-audited."
-  role             = aws_iam_role.scheduler.arn
-  filename         = data.archive_file.scheduler.output_path
-  source_code_hash = data.archive_file.scheduler.output_base64sha256
-  handler          = "scheduler.handler"
-  runtime          = var.lambda_runtime
-  timeout          = 300
-  memory_size      = 512
-  kms_key_arn      = var.kms_key_arn
+  # checkov:skip=CKV_AWS_272: Lambda code-signing requires AWS Signer; enterprise opt-in not modelled. Pin module ref for supply-chain protection.
+  function_name                  = "${var.name_prefix}-scheduler"
+  description                    = "Tag-driven multi-resource scheduler (EC2 + RDS + ASG). DDB-audited."
+  role                           = aws_iam_role.scheduler.arn
+  filename                       = data.archive_file.scheduler.output_path
+  source_code_hash               = data.archive_file.scheduler.output_base64sha256
+  handler                        = "scheduler.handler"
+  runtime                        = var.lambda_runtime
+  timeout                        = 300
+  memory_size                    = 512
+  kms_key_arn                    = var.kms_key_arn
+  reserved_concurrent_executions = var.reserved_concurrent_executions
 
   environment {
     variables = local.scheduler_env
+  }
+
+  tracing_config {
+    mode = var.xray_tracing_enabled ? "Active" : "PassThrough"
   }
 
   dead_letter_config {
@@ -73,21 +81,27 @@ resource "aws_lambda_function" "scheduler" {
 }
 
 resource "aws_lambda_function" "discovery" {
+  # checkov:skip=CKV_AWS_272: Lambda code-signing requires AWS Signer; enterprise opt-in not modelled.
   count = var.enable_discovery ? 1 : 0
 
-  function_name    = "${var.name_prefix}-scheduler-discovery"
-  description      = "Weekly scan for low-CPU resources lacking a Schedule tag — proposes scheduling candidates."
-  role             = aws_iam_role.discovery[0].arn
-  filename         = data.archive_file.discovery[0].output_path
-  source_code_hash = data.archive_file.discovery[0].output_base64sha256
-  handler          = "discovery.handler"
-  runtime          = var.lambda_runtime
-  timeout          = 600
-  memory_size      = 512
-  kms_key_arn      = var.kms_key_arn
+  function_name                  = "${var.name_prefix}-scheduler-discovery"
+  description                    = "Weekly scan for low-CPU resources lacking a Schedule tag — proposes scheduling candidates."
+  role                           = aws_iam_role.discovery[0].arn
+  filename                       = data.archive_file.discovery[0].output_path
+  source_code_hash               = data.archive_file.discovery[0].output_base64sha256
+  handler                        = "discovery.handler"
+  runtime                        = var.lambda_runtime
+  timeout                        = 600
+  memory_size                    = 512
+  kms_key_arn                    = var.kms_key_arn
+  reserved_concurrent_executions = var.reserved_concurrent_executions
 
   environment {
     variables = local.discovery_env
+  }
+
+  tracing_config {
+    mode = var.xray_tracing_enabled ? "Active" : "PassThrough"
   }
 
   dead_letter_config {

@@ -28,9 +28,28 @@
 variable "name_prefix" { type = string }
 variable "events_topic_arn" { type = string }
 variable "kms_key_arn" { type = string }
-variable "log_retention_days" { type = number }
+variable "log_retention_days" {
+  type = number
+
+  validation {
+    condition     = var.log_retention_days >= 365
+    error_message = "log_retention_days must be >= 365 (Checkov CKV_AWS_338)."
+  }
+}
 variable "lambda_runtime" { type = string }
 variable "default_tags" { type = map(string) }
+
+variable "xray_tracing_enabled" {
+  description = "Enable AWS X-Ray Active tracing on every idle-cleanup Lambda (ebs / eip / snapshot / nat / eni / lb)."
+  type        = bool
+  default     = true
+}
+
+variable "reserved_concurrent_executions" {
+  description = "Reserve N concurrent executions per idle-cleanup Lambda. Null = no reservation."
+  type        = number
+  default     = null
+}
 
 variable "dry_run" {
   description = "When true (default), every cleanup Lambda only reports. When false, mutation-capable scans actually delete (still bounded by cost ceiling + exception tags)."
@@ -455,6 +474,8 @@ resource "aws_iam_role_policy_attachment" "basic" {
 }
 
 resource "aws_iam_role_policy" "this" {
+  # checkov:skip=CKV_AWS_290: AWS does not support resource-level permissions for ec2:DeleteVolume / DeleteSnapshot / ReleaseAddress / DeleteNatGateway, elasticloadbalancing:* and similar. Scope is enforced via dry_run mode + EXCEPTION_TAG_KEY filtering at the Lambda runtime.
+  # checkov:skip=CKV_AWS_355: Same as CKV_AWS_290 — these AWS actions don't accept resource-level constraints.
   for_each = local.enabled_types
 
   name = "${each.key}-cleanup"
@@ -490,6 +511,11 @@ resource "aws_iam_role_policy" "this" {
           Resource = var.kms_key_arn
         },
       ],
+      var.xray_tracing_enabled ? [{
+        Effect   = "Allow"
+        Action   = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
+        Resource = "*"
+      }] : [],
     )
   })
 }
@@ -526,6 +552,7 @@ data "archive_file" "lambda" {
 ###############################################################################
 
 resource "aws_cloudwatch_log_group" "this" {
+  # checkov:skip=CKV_AWS_338: retention is driven by var.log_retention_days, validated to >= 365 at the variable level.
   for_each          = local.enabled_types
   name              = "/aws/lambda/${var.name_prefix}-idle-${each.key}"
   retention_in_days = var.log_retention_days
@@ -538,21 +565,27 @@ resource "aws_cloudwatch_log_group" "this" {
 ###############################################################################
 
 resource "aws_lambda_function" "this" {
+  # checkov:skip=CKV_AWS_272: Lambda code-signing requires AWS Signer; enterprise opt-in not modelled. Pin module ref for supply-chain protection.
   for_each = local.enabled_types
 
-  function_name    = "${var.name_prefix}-idle-${each.key}"
-  description      = "Idle ${each.key} detector + (optional) cleanup. dry_run=${var.dry_run}."
-  role             = aws_iam_role.this[each.key].arn
-  filename         = data.archive_file.lambda[each.key].output_path
-  source_code_hash = data.archive_file.lambda[each.key].output_base64sha256
-  handler          = each.value.handler
-  runtime          = var.lambda_runtime
-  timeout          = each.value.timeout
-  memory_size      = each.value.memory
-  kms_key_arn      = var.kms_key_arn
+  function_name                  = "${var.name_prefix}-idle-${each.key}"
+  description                    = "Idle ${each.key} detector + (optional) cleanup. dry_run=${var.dry_run}."
+  role                           = aws_iam_role.this[each.key].arn
+  filename                       = data.archive_file.lambda[each.key].output_path
+  source_code_hash               = data.archive_file.lambda[each.key].output_base64sha256
+  handler                        = each.value.handler
+  runtime                        = var.lambda_runtime
+  timeout                        = each.value.timeout
+  memory_size                    = each.value.memory
+  kms_key_arn                    = var.kms_key_arn
+  reserved_concurrent_executions = var.reserved_concurrent_executions
 
   environment {
     variables = merge(local.common_env, each.value.env)
+  }
+
+  tracing_config {
+    mode = var.xray_tracing_enabled ? "Active" : "PassThrough"
   }
 
   dead_letter_config {

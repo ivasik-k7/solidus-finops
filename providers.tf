@@ -18,14 +18,12 @@ provider "aws" {
   }
 }
 
-# A second provider alias is provided for the us-east-1 region.
-# Certain services (CloudFront, ACM for CloudFront, Cost & Usage Reports v1 endpoints,
-# Cost Anomaly Detection in some legacy contexts) require us-east-1.
-provider "aws" {
-  alias  = "us_east_1"
-  region = "us-east-1"
-
-  default_tags {
-    tags = local.default_tags
-  }
-}
+# A us-east-1 provider alias was previously declared for CUR v1 + legacy Cost
+# Anomaly Detection endpoints. CUR 2.0 via BCM Data Exports is region-agnostic
+# at the Terraform layer (the API is global with a us-east-1 endpoint but does
+# not require a separate provider). Removed in v0.2.x.
+#
+# If you need to reach a us-east-1-only service (e.g. CloudFront, ACM for
+# CloudFront), add a `provider "aws" { alias = "us_east_1" ... }` block back
+# alongside this one and pass `providers = { aws = aws.us_east_1 }` to the
+# consuming module.

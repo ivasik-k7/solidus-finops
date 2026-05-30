@@ -127,6 +127,11 @@ resource "aws_iam_role_policy" "aggregator" {
         Action   = ["sns:Publish"]
         Resource = var.events_topic_arn
       }] : [],
+      var.xray_tracing_enabled ? [{
+        Effect   = "Allow"
+        Action   = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
+        Resource = "*"
+      }] : [],
     )
   })
 }

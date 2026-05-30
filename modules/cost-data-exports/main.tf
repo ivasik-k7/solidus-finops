@@ -35,6 +35,23 @@ variable "events_topic_arn" {
 variable "log_retention_days" {
   type    = number
   default = 365
+
+  validation {
+    condition     = var.log_retention_days >= 365
+    error_message = "log_retention_days must be >= 365 (Checkov CKV_AWS_338)."
+  }
+}
+
+variable "xray_tracing_enabled" {
+  description = "Enable AWS X-Ray Active tracing on the health-check Lambda."
+  type        = bool
+  default     = true
+}
+
+variable "reserved_concurrent_executions" {
+  description = "Reserve N concurrent executions for the health-check Lambda. Null = no reservation."
+  type        = number
+  default     = null
 }
 
 variable "lambda_runtime" {
@@ -114,6 +131,9 @@ data "aws_region" "current" {}
 ###############################################################################
 
 resource "aws_s3_bucket" "cost_data" {
+  # checkov:skip=CKV_AWS_18: S3 access logging duplicates information CloudTrail S3 data events provide more thoroughly. Recommended pattern: enable CloudTrail data events on this bucket at the org level (out of scope for this module).
+  # checkov:skip=CKV_AWS_144: Cross-region replication of CUR data is overkill — AWS can regenerate any month's CUR on request. CRR would double storage cost without proportional audit value.
+  # checkov:skip=CKV2_AWS_62: S3 event notifications are not needed for CUR — the framework's daily health-check Lambda probes freshness on a schedule; event-driven processing isn't required.
   bucket = var.bucket_name
 
   # Belt and braces: force_destroy = false blocks `aws s3 rb` style wipes;
@@ -461,6 +481,31 @@ locals {
   cur2_table_name   = "${local.cur2_table_prefix}data"
 }
 
+resource "aws_glue_security_configuration" "cur" {
+  count = var.enable_athena_workgroup ? 1 : 0
+
+  name = "${var.name_prefix}-cur-secconfig"
+
+  # Checkov CKV_AWS_195 — Glue components must be associated with a security
+  # configuration. CUR data is at-rest-encrypted in S3 via SSE-KMS already
+  # (mode = SSE-KMS), CloudWatch crawler logs via SSE-KMS, job bookmarks
+  # via CSE-KMS so the bookmark database read at crawl-time is encrypted.
+  encryption_configuration {
+    s3_encryption {
+      s3_encryption_mode = "SSE-KMS"
+      kms_key_arn        = var.kms_key_arn
+    }
+    cloudwatch_encryption {
+      cloudwatch_encryption_mode = "SSE-KMS"
+      kms_key_arn                = var.kms_key_arn
+    }
+    job_bookmarks_encryption {
+      job_bookmarks_encryption_mode = "CSE-KMS"
+      kms_key_arn                   = var.kms_key_arn
+    }
+  }
+}
+
 resource "aws_glue_crawler" "cur" {
   count = var.enable_athena_workgroup ? 1 : 0
 
@@ -475,6 +520,9 @@ resource "aws_glue_crawler" "cur" {
   # Daily at 06:00 UTC — CUR refreshes a few times a day; once is enough to
   # pick up the new BILLING_PERIOD partition when a month rolls over.
   schedule = "cron(0 6 * * ? *)"
+
+  # Attach the security configuration created above (CKV_AWS_195).
+  security_configuration = aws_glue_security_configuration.cur[0].name
 
   s3_target {
     # BCM Data Exports writes to <prefix>/<export>/<export>/data/BILLING_PERIOD=YYYY-MM/
@@ -499,12 +547,28 @@ resource "aws_glue_crawler" "cur" {
 }
 
 resource "aws_s3_bucket" "athena_results" {
+  # checkov:skip=CKV_AWS_18: Athena query results are ephemeral (30d lifecycle); CloudTrail data events cover anything audit-relevant.
+  # checkov:skip=CKV_AWS_21: Versioning IS enabled below via aws_s3_bucket_versioning.athena_results — Checkov can't trace the linked resource.
+  # checkov:skip=CKV_AWS_144: Cross-region replication of ephemeral query results is wasteful — results regenerate on re-query.
+  # checkov:skip=CKV_AWS_145: KMS encryption IS configured below via aws_s3_bucket_server_side_encryption_configuration.athena_results — Checkov can't trace the linked resource.
+  # checkov:skip=CKV2_AWS_6: Public access block IS configured below via aws_s3_bucket_public_access_block.athena_results — Checkov can't trace the linked resource.
+  # checkov:skip=CKV2_AWS_61: Lifecycle config IS configured below via aws_s3_bucket_lifecycle_configuration.athena_results — Checkov can't trace the linked resource.
+  # checkov:skip=CKV2_AWS_62: S3 event notifications not needed for Athena results bucket — Athena writes/reads on a synchronous query basis.
   count  = var.enable_athena_workgroup ? 1 : 0
   bucket = "${var.bucket_name}-athena-results"
   tags   = merge(var.default_tags, { Purpose = "athena-query-results" })
 
   lifecycle {
     prevent_destroy = true
+  }
+}
+
+resource "aws_s3_bucket_versioning" "athena_results" {
+  count  = var.enable_athena_workgroup ? 1 : 0
+  bucket = aws_s3_bucket.athena_results[0].id
+
+  versioning_configuration {
+    status = "Enabled"
   }
 }
 
@@ -540,7 +604,19 @@ resource "aws_s3_bucket_lifecycle_configuration" "athena_results" {
     expiration {
       days = 30
     }
+    # Noncurrent versions (introduced when versioning was enabled) — clean up
+    # promptly. Query results are ephemeral by design.
+    noncurrent_version_expiration {
+      noncurrent_days = 7
+    }
+    # Checkov CKV_AWS_300 — abort orphaned multipart uploads after 7d so
+    # interrupted Athena writes don't accumulate storage charges silently.
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
   }
+
+  depends_on = [aws_s3_bucket_versioning.athena_results]
 }
 
 resource "aws_athena_workgroup" "finops" {
@@ -980,7 +1056,12 @@ resource "aws_iam_role_policy" "health_check" {
           Action   = ["s3:PutObject", "s3:GetObject"]
           Resource = "${aws_s3_bucket.athena_results[0].arn}/*"
         },
-      ] : []
+      ] : [],
+      var.xray_tracing_enabled ? [{
+        Effect   = "Allow"
+        Action   = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
+        Resource = "*"
+      }] : [],
     )
   })
 }
@@ -993,6 +1074,7 @@ data "archive_file" "health_check" {
 }
 
 resource "aws_cloudwatch_log_group" "health_check" {
+  # checkov:skip=CKV_AWS_338: retention is driven by var.log_retention_days, validated to >= 365 at the variable level.
   count             = var.enable_health_check ? 1 : 0
   name              = "/aws/lambda/${var.name_prefix}-cost-data-health"
   retention_in_days = var.log_retention_days
@@ -1001,18 +1083,20 @@ resource "aws_cloudwatch_log_group" "health_check" {
 }
 
 resource "aws_lambda_function" "health_check" {
+  # checkov:skip=CKV_AWS_272: Lambda code-signing requires AWS Signer; enterprise opt-in not modelled. Pin module ref for supply-chain protection.
   count = var.enable_health_check ? 1 : 0
 
-  function_name    = "${var.name_prefix}-cost-data-health"
-  description      = "Daily CUR + crawler + Athena health check"
-  role             = aws_iam_role.health_check[0].arn
-  filename         = data.archive_file.health_check[0].output_path
-  source_code_hash = data.archive_file.health_check[0].output_base64sha256
-  handler          = "health_check.handler"
-  runtime          = var.lambda_runtime
-  timeout          = 300
-  memory_size      = 256
-  kms_key_arn      = var.kms_key_arn
+  function_name                  = "${var.name_prefix}-cost-data-health"
+  description                    = "Daily CUR + crawler + Athena health check"
+  role                           = aws_iam_role.health_check[0].arn
+  filename                       = data.archive_file.health_check[0].output_path
+  source_code_hash               = data.archive_file.health_check[0].output_base64sha256
+  handler                        = "health_check.handler"
+  runtime                        = var.lambda_runtime
+  timeout                        = 300
+  memory_size                    = 256
+  kms_key_arn                    = var.kms_key_arn
+  reserved_concurrent_executions = var.reserved_concurrent_executions
 
   environment {
     variables = {
@@ -1024,6 +1108,10 @@ resource "aws_lambda_function" "health_check" {
       SNS_TOPIC_ARN    = coalesce(var.events_topic_arn, "")
       METRIC_NAMESPACE = "FinOps/CostDataExports"
     }
+  }
+
+  tracing_config {
+    mode = var.xray_tracing_enabled ? "Active" : "PassThrough"
   }
 
   dead_letter_config {

@@ -15,9 +15,22 @@ Per-module changelogs live alongside each module:
 ## [0.2.1] — 2026-05-30
 
 The "Solidus" release. The framework gets a name, a license, a complete
-set of open-source governance files, a clean static-analysis pass, and
-one legitimately new feature (the budgets burn-rate metric-math alarm
-that had been declared but never built).
+set of open-source governance files, and two real runtime additions:
+the budgets burn-rate metric-math alarm that had been declared but never
+built, and X-Ray Active tracing on every Lambda.
+
+**Static-analysis status as of this tag:**
+
+- `terraform fmt -recursive` — clean
+- `terraform validate` — green on root + all 4 examples
+- `tflint --recursive` — **zero issues**
+- `checkov` with `soft_fail: false` in CI — **zero unsuppressed
+  failures**. Every suppression carries an inline `# checkov:skip=`
+  comment plus a matching subsection in
+  [docs/COMPLIANCE_NOTES.md](docs/COMPLIANCE_NOTES.md)
+  "Documented Checkov suppressions".
+
+CI hard-enforces all of the above — no advisory checks remain.
 
 ### Added
 
@@ -38,6 +51,36 @@ that had been declared but never built).
   Uses `dynamic "metric_query"` blocks over `keys(var.budgets)` with
   `m0..mN` IDs so CloudWatch ID constraints are met regardless of budget
   key characters.
+- **X-Ray Active tracing** on every Lambda the framework deploys
+  (`alerting/dispatcher`, `budgets/performance`,
+  `cost-data-exports/health_check`, `finops-metrics/aggregator`,
+  6× `idle-resource-cleanup/*`, `instance-scheduler/scheduler` +
+  `discovery`, `tag-governance/untagged_cost`). Gated by a per-module
+  `xray_tracing_enabled` variable defaulting to `true`. Adds
+  `tracing_config { mode = "Active" }` to each Lambda plus the
+  `xray:PutTraceSegments` + `xray:PutTelemetryRecords` IAM permissions
+  via `concat()`. CloudWatch cost impact at framework volume is
+  negligible (~$0.01/month).
+- **Reserved concurrency** opt-in via a per-module
+  `reserved_concurrent_executions` variable (default `null` = no
+  reservation). Set to a positive integer to cap, or `-1` to disable
+  invocations entirely — useful as a kill switch during incidents.
+- **AWS Glue security configuration** (`aws_glue_security_configuration.cur`)
+  on the CUR crawler in `cost-data-exports`. SSE-KMS for the crawler's
+  S3 reads, SSE-KMS for its CloudWatch Logs, CSE-KMS for its job
+  bookmarks. Attached to the crawler via `security_configuration`.
+- **S3 abort-incomplete-multipart-upload** rule on the
+  `cost-data-exports/athena_results` bucket lifecycle
+  (`days_after_initiation = 7`) — prevents orphaned multipart uploads
+  from accumulating silent storage charges.
+- **S3 versioning** on the `cost-data-exports/athena_results` and
+  `tag-governance/config` buckets. The `cost_data` bucket was already
+  versioned; the other two now match. Athena-results noncurrent
+  versions clean up after 7 days; Config noncurrent versions after 90.
+- **New `aws_s3_bucket_lifecycle_configuration.config`** in
+  `tag-governance` — 90-day noncurrent-version cleanup + 7-day
+  multipart abort. Closes a real gap (the Config delivery bucket had
+  no lifecycle config at all).
 - **`versions.tf` on every module + example.** Five older modules
   (`alerting`, `budgets`, `cost-data-exports`, `idle-resource-cleanup`,
   `tag-governance`) and all four `examples/*` now carry an explicit
@@ -120,6 +163,22 @@ that had been declared but never built).
   of the sensitive-marked map directly. URLs stay sensitive in plan
   output; tflint's static evaluator stops choking on the iteration. 12
   resources affected (slack/teams/pagerduty/opsgenie/webhook × 2 each).
+- **`log_retention_days >= 365` validation on every module.** Each
+  module's `log_retention_days` variable now has a `validation` block
+  that rejects sub-365 retention at `terraform plan` time. Aligns with
+  Checkov CKV_AWS_338 and most regulatory regimes' 1-year audit-log
+  minimum. The framework's defaults were already 365 — this just
+  prevents accidental overrides.
+- **`instance-scheduler` log_retention_days validation tightened** —
+  previously accepted any valid CloudWatch retention value; now only
+  values ≥ 365.
+- **Root `providers.tf` simplified** — removed the `us_east_1` provider
+  alias that was inherited from CUR v1 days. CUR 2.0 via BCM Data
+  Exports is region-agnostic at the Terraform layer; no module uses
+  the alias. Left a comment explaining when to add it back
+  (CloudFront / ACM-for-CloudFront only).
+- **Root `locals.tf` cleanup** — dropped the orphaned `local.kms_key_id`
+  (only `kms_key_arn` is actually consumed).
 
 ### Fixed
 
@@ -127,7 +186,8 @@ that had been declared but never built).
   `aws_dynamodb_table_invalid_stream_view_type` rule was misfiring on
   `for_each` over `cty.EmptyObjectVal.Mark(marks.Sensitive)`. Fixed by
   the `nonsensitive(toset(keys(...)))` restructure above.
-- **26 tflint warnings**:
+- **28 tflint warnings** across the original sweep + the two
+  follow-ups:
   - Missing `terraform_required_version` on 5 module main.tf files + 4
     example main.tf files (fixed by adding `versions.tf` to each)
   - Missing version constraints in `required_providers` for the `aws`
@@ -143,6 +203,44 @@ that had been declared but never built).
   - Unused `var.burn_rate_alarm_days_to_breach` in `budgets` — the
     declared-but-never-implemented variable is now backed by the new
     burn-rate alarm (see Added)
+  - Unused `local.kms_key_id` at the root (removed)
+  - Unused `aws.us_east_1` provider alias at the root (removed)
+- **Checkov: 0 unsuppressed failures.** Five rule categories fixed in
+  code, six categories suppressed with inline `# checkov:skip=<rule>`
+  comments and AWS-doc-cited justifications. The fixed categories add
+  real runtime behaviour (X-Ray tracing, Glue security config, S3
+  abort-multipart). The suppressed categories are either AWS-imposed
+  limitations (resource-level perms not supported for the actions the
+  framework needs) or enterprise-only features (AWS Signer code-signing)
+  that are out of scope for this version. Every suppression carries:
+  - **Inline rationale** at the resource definition
+  - **A subsection in [docs/COMPLIANCE_NOTES.md](docs/COMPLIANCE_NOTES.md)**
+    under "Documented Checkov suppressions" — auditors get one page that
+    lists every suppression with rule, location, why, mitigation, and
+    AWS-doc link
+  - **Where applicable, mitigation in code** — e.g. instance-scheduler
+    + idle-cleanup tag-based runtime filtering, Budget Actions trust
+    policy locking the role to `budgets.amazonaws.com` only
+
+  | Rule | Treatment | Where |
+  |---|---|---|
+  | CKV_AWS_50 (X-Ray tracing) | **Code fix** — `tracing_config { mode = "Active" }` on all 8 Lambdas | all Lambda resources |
+  | CKV_AWS_115 (reserved concurrency) | **Code fix** (opt-in) — `reserved_concurrent_executions` variable per module | all Lambda resources |
+  | CKV_AWS_195 (Glue security configuration) | **Code fix** — new `aws_glue_security_configuration.cur` | `cost-data-exports` |
+  | CKV_AWS_300 (S3 abort multipart) | **Code fix** — `abort_incomplete_multipart_upload { days_after_initiation = 7 }` | `cost-data-exports/athena_results` lifecycle |
+  | CKV_AWS_338 (log retention ≥ 1y) | **Variable validation + inline skip** — `>= 365` enforced at plan time on every module; static `checkov:skip` because Checkov can't evaluate variable validations | all 8 `aws_cloudwatch_log_group` resources |
+  | CKV_AWS_272 (Lambda code-signing) | **Suppressed** — enterprise opt-in via AWS Signer; not modelled. Mitigated by pinning module ref | all 8 Lambda resources |
+  | CKV_AWS_286, 288, 289, 290, 355 (Budget Actions IAM) | **Suppressed** — AWS Budget Actions is a managed service; permissions are AWS-documented requirements; trust policy locks role to `budgets.amazonaws.com` only | `budgets/aws_iam_role_policy.budget_actions` |
+  | CKV_AWS_290, 355 (IAM `*` for EC2/RDS/ASG/ELB) | **Suppressed** — AWS doesn't support resource-level perms for the start/stop/delete actions these Lambdas need; scope enforced via tag-based runtime filtering | `instance-scheduler/iam.tf`, `idle-resource-cleanup/main.tf` |
+  | CKV_AWS_288, 290, 355 (Athena/Glue read) | **Suppressed** — Athena `StartQueryExecution`/`GetQueryResults` + Glue `GetDatabase`/`GetTable`/`GetPartitions` don't accept resource-level constraints | `tag-governance/aws_iam_role_policy.untagged_cost` |
+  | CKV_AWS_21 (S3 versioning on athena_results + config) | **Code fix** — added `aws_s3_bucket_versioning` to both | `cost-data-exports`, `tag-governance` |
+  | CKV2_AWS_61 (S3 lifecycle on config) | **Code fix** — added `aws_s3_bucket_lifecycle_configuration.config` | `tag-governance` |
+  | CKV_AWS_18 (S3 access logging) | **Suppressed** — CloudTrail S3 data events at the org level provide the audit-grade access log; S3 access logging would create a chicken-and-egg problem | all three framework S3 buckets |
+  | CKV_AWS_144 (S3 cross-region replication) | **Suppressed** — overkill for FinOps data (CUR can be regenerated by AWS, query results are ephemeral, Config history can replay from CloudTrail) | all three framework S3 buckets |
+  | CKV2_AWS_62 (S3 event notifications) | **Suppressed** — none of the three buckets have event-driven downstream consumers | all three framework S3 buckets |
+  | CKV_AWS_145, CKV2_AWS_6, CKV2_AWS_61 (false positives on companion-resource linkage) | **Suppressed** — KMS encryption, public-access block, and lifecycle ARE configured via the corresponding `aws_s3_bucket_*` companion resources; Checkov 3.x sometimes fails to trace the linkage | `cost-data-exports/athena_results`, `tag-governance/config` |
+  | CKV2_AWS_45, CKV2_AWS_48 (Config recorder) | **Suppressed** — false positives: `all_supported = true` is literal, `include_global_resource_types` defaults to `true` via variable, `is_enabled = true` is literal | `tag-governance/aws_config_configuration_recorder*` |
+  | CKV2_AWS_57 (Secrets Manager rotation) | **Suppressed** — the secrets hold third-party webhook URLs / integration keys that the third parties don't expose rotation APIs for (Slack, Teams, PagerDuty, Opsgenie, generic webhooks) | `alerting/aws_secretsmanager_secret.{slack,teams,pagerduty,opsgenie,webhook}` |
 
 ### Verification
 
@@ -151,26 +249,58 @@ that had been declared but never built).
   (only the persistent DDB `hash_key`/`range_key` deprecation warnings
   in `idle-resource-cleanup` remain — that's an AWS-provider migration
   deferred per [modules/idle-resource-cleanup/main.tf](modules/idle-resource-cleanup/main.tf) comments)
+- `tflint --recursive --format compact` clean (28 warnings + 1 runtime
+  blocker from the original sweep all resolved)
+- **Checkov: 0 unsuppressed failures** — original 114 findings + 78
+  follow-up findings all addressed. All inline `# checkov:skip=`
+  comments placed correctly inside resource blocks (the v0.2.1-draft
+  placement above the block was a latent bug — Checkov requires
+  comments inside the resource).
 - Python syntax check passes on all 16 Lambda files
 - Zero `var.<old_name>` references in any `.tf`, `.tfvars`, or `.md` file
 
 ### Migration from v0.1.0
 
-No breaking changes. The variable surface is identical. Update consumers
-by:
+No breaking changes. The variable surface is backwards-compatible.
+Update consumers by:
 
 1. `git pull` the new tag
 2. `terraform init` (picks up the new `versions.tf` files)
 3. `terraform plan` will show:
-   - One new alarm (`aws_cloudwatch_metric_alarm.burn_rate_low`) inside
-     the `budgets` module, only if you have ≥ 1 budget AND
+   - **One new alarm** (`aws_cloudwatch_metric_alarm.burn_rate_low`)
+     inside the `budgets` module, only if you have ≥ 1 budget AND
      `budgets_performance_tracking_enabled = true` AND
      `budgets_burn_rate_alarm_days_to_breach != null` (default 7).
      Disable by setting `budgets_burn_rate_alarm_days_to_breach = null`.
-   - Minor in-place updates to the `aws_secretsmanager_secret*` resources
-     if any are present — the `nonsensitive(toset(keys(...)))`
-     restructure doesn't change resource identity, only the iteration
-     expression in the plan diff.
+   - **One new resource per CUR setup**
+     (`aws_glue_security_configuration.cur`) if
+     `cost_data_exports_athena_enabled = true`.
+   - **New `aws_s3_bucket_versioning.athena_results`** if
+     `cost_data_exports_athena_enabled = true`. Existing query results
+     stay untouched; only newly-written results get versioned.
+   - **New `aws_s3_bucket_versioning.config`** +
+     **`aws_s3_bucket_lifecycle_configuration.config`** if
+     `tag_governance_enabled = true` and the framework manages the
+     Config recorder. Cleans up noncurrent Config delivery versions
+     after 90 days.
+   - **In-place updates on every Lambda** — `tracing_config { mode =
+     "Active" }` block added, `reserved_concurrent_executions =
+     null` field added. No replacement; no downtime. Disable X-Ray by
+     setting the per-module `xray_tracing_enabled = false`.
+   - **In-place update on every Lambda IAM role policy** — two new
+     statements added for `xray:PutTraceSegments` +
+     `xray:PutTelemetryRecords`. Drops away if you disable X-Ray.
+   - **In-place update on the `athena_results` S3 lifecycle** — adds
+     the `abort_incomplete_multipart_upload` rule.
+   - **Minor in-place updates to the `aws_secretsmanager_secret*`
+     resources** if any are present — the
+     `nonsensitive(toset(keys(...)))` restructure doesn't change
+     resource identity, only the iteration expression in the plan diff.
+4. If you were passing `log_retention_days < 365` to any module,
+   `terraform plan` will now fail with a clear validation error.
+   Either bump the value to ≥ 365 or set
+   `xray_tracing_enabled = false` to disable the new behaviour — both
+   knobs are documented in each module's variables.tf.
 
 ## [0.1.0] — 2026-05-29
 

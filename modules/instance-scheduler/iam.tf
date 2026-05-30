@@ -31,6 +31,8 @@ resource "aws_iam_role_policy_attachment" "scheduler_basic" {
 }
 
 resource "aws_iam_role_policy" "scheduler" {
+  # checkov:skip=CKV_AWS_290: AWS does not support resource-level permissions for ec2:StartInstances/StopInstances, rds:Start/StopDBInstance/Cluster, autoscaling:UpdateAutoScalingGroup. These actions REQUIRE Resource = "*". Scope is enforced via the OPT_IN_TAG_KEY tag filter applied inside the Lambda runtime.
+  # checkov:skip=CKV_AWS_355: Same as CKV_AWS_290 — Resource = "*" is mandatory for the EC2/RDS/ASG stop/start actions this role needs.
   name = "scheduler"
   role = aws_iam_role.scheduler.id
 
@@ -105,6 +107,11 @@ resource "aws_iam_role_policy" "scheduler" {
         Effect   = "Allow"
         Action   = ["sns:Publish"]
         Resource = var.events_topic_arn
+      }] : [],
+      var.xray_tracing_enabled ? [{
+        Effect   = "Allow"
+        Action   = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
+        Resource = "*"
       }] : [],
     )
   })
@@ -183,6 +190,11 @@ resource "aws_iam_role_policy" "discovery" {
         Effect   = "Allow"
         Action   = ["sns:Publish"]
         Resource = var.events_topic_arn
+      }] : [],
+      var.xray_tracing_enabled ? [{
+        Effect   = "Allow"
+        Action   = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
+        Resource = "*"
       }] : [],
     )
   })

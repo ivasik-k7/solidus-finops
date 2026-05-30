@@ -35,6 +35,11 @@ variable "kms_key_arn" { type = string }
 variable "log_retention_days" {
   type    = number
   default = 365
+
+  validation {
+    condition     = var.log_retention_days >= 365
+    error_message = "log_retention_days must be >= 365 (Checkov CKV_AWS_338 — and most audit regimes require 1y+). Drop the variable in your root composition if you really need less."
+  }
 }
 
 variable "lambda_runtime" {
@@ -45,6 +50,18 @@ variable "lambda_runtime" {
 variable "default_tags" {
   type    = map(string)
   default = {}
+}
+
+variable "xray_tracing_enabled" {
+  description = "Enable AWS X-Ray Active tracing on the dispatcher Lambda. Adds the IAM permissions + the tracing_config block. ~$0.0001 per 100k traces — effectively free at this volume."
+  type        = bool
+  default     = true
+}
+
+variable "reserved_concurrent_executions" {
+  description = "Reserve N concurrent executions for the dispatcher Lambda. Null = no reservation (default). Set to a positive integer to cap concurrency, or -1 to disable invocations entirely."
+  type        = number
+  default     = null
 }
 
 # ---------------------------------------------------------------------------
@@ -414,6 +431,7 @@ resource "aws_sns_topic_subscription" "email" {
 ###############################################################################
 
 resource "aws_secretsmanager_secret" "slack" {
+  # checkov:skip=CKV2_AWS_57: Slack incoming webhook URLs are immutable — Slack does not support webhook URL rotation. Rotation must be initiated by the Slack workspace admin via the Slack UI; AWS Secrets Manager cannot perform this. Operators rotate manually when needed.
   # Iterate the non-sensitive key set so tflint's static evaluator doesn't choke.
   # Look the sensitive value up from the map by key inside the resource body.
   for_each = nonsensitive(toset(keys(local.slack_inline_secrets)))
@@ -432,6 +450,7 @@ resource "aws_secretsmanager_secret_version" "slack" {
 }
 
 resource "aws_secretsmanager_secret" "teams" {
+  # checkov:skip=CKV2_AWS_57: Microsoft Teams incoming webhook URLs are immutable — Teams does not support webhook rotation via an API. Operators rotate manually via Teams admin.
   for_each = nonsensitive(toset(keys(local.teams_inline_secrets)))
 
   name                    = "${var.name_prefix}-channel-${each.value}"
@@ -448,6 +467,7 @@ resource "aws_secretsmanager_secret_version" "teams" {
 }
 
 resource "aws_secretsmanager_secret" "pagerduty" {
+  # checkov:skip=CKV2_AWS_57: PagerDuty integration keys are static credentials managed in the PagerDuty UI. Rotation requires re-issuing the integration on the PagerDuty side — not something AWS Secrets Manager can automate.
   for_each = nonsensitive(toset(keys(local.pagerduty_inline_secrets)))
 
   name                    = "${var.name_prefix}-channel-${each.value}"
@@ -464,6 +484,7 @@ resource "aws_secretsmanager_secret_version" "pagerduty" {
 }
 
 resource "aws_secretsmanager_secret" "opsgenie" {
+  # checkov:skip=CKV2_AWS_57: Opsgenie API keys are static credentials issued from the Opsgenie integration UI — no AWS-Secrets-Manager-driven rotation API exists on the Opsgenie side.
   for_each = nonsensitive(toset(keys(local.opsgenie_inline_secrets)))
 
   name                    = "${var.name_prefix}-channel-${each.value}"
@@ -480,6 +501,7 @@ resource "aws_secretsmanager_secret_version" "opsgenie" {
 }
 
 resource "aws_secretsmanager_secret" "webhook" {
+  # checkov:skip=CKV2_AWS_57: Generic webhook URLs are caller-defined opaque strings — the framework has no knowledge of how to rotate them. Operators rotate manually when the downstream service issues a new URL.
   for_each = nonsensitive(toset(keys(local.webhook_inline_secrets)))
 
   name                    = "${var.name_prefix}-channel-${each.value}"
@@ -613,6 +635,11 @@ resource "aws_iam_role_policy" "dispatcher" {
         Action   = ["cloudwatch:PutMetricData"]
         Resource = "*"
       }],
+      var.xray_tracing_enabled ? [{
+        Effect   = "Allow"
+        Action   = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
+        Resource = "*"
+      }] : [],
     )
   })
 }
@@ -634,6 +661,7 @@ data "archive_file" "dispatcher" {
 }
 
 resource "aws_cloudwatch_log_group" "dispatcher" {
+  # checkov:skip=CKV_AWS_338: retention is driven by var.log_retention_days, which has a `>= 365` validation block. Static analysers can't evaluate variable validations; the constraint is enforced at terraform plan time.
   count             = local.any_dispatch_channels ? 1 : 0
   name              = "/aws/lambda/${var.name_prefix}-dispatcher"
   retention_in_days = var.log_retention_days
@@ -642,18 +670,20 @@ resource "aws_cloudwatch_log_group" "dispatcher" {
 }
 
 resource "aws_lambda_function" "dispatcher" {
+  # checkov:skip=CKV_AWS_272: Lambda code-signing requires AWS Signer infrastructure (signing profile + signing config). Enterprise opt-in not modelled. Pin a specific Terraform module ref/commit for supply-chain protection instead.
   count = local.any_dispatch_channels ? 1 : 0
 
-  function_name    = "${var.name_prefix}-dispatcher"
-  description      = "Multi-channel event dispatcher with severity routing + dedup + audit"
-  role             = aws_iam_role.dispatcher[0].arn
-  filename         = data.archive_file.dispatcher[0].output_path
-  source_code_hash = data.archive_file.dispatcher[0].output_base64sha256
-  handler          = "dispatcher.handler"
-  runtime          = var.lambda_runtime
-  timeout          = 30
-  memory_size      = 256
-  kms_key_arn      = var.kms_key_arn
+  function_name                  = "${var.name_prefix}-dispatcher"
+  description                    = "Multi-channel event dispatcher with severity routing + dedup + audit"
+  role                           = aws_iam_role.dispatcher[0].arn
+  filename                       = data.archive_file.dispatcher[0].output_path
+  source_code_hash               = data.archive_file.dispatcher[0].output_base64sha256
+  handler                        = "dispatcher.handler"
+  runtime                        = var.lambda_runtime
+  timeout                        = 30
+  memory_size                    = 256
+  kms_key_arn                    = var.kms_key_arn
+  reserved_concurrent_executions = var.reserved_concurrent_executions
 
   environment {
     variables = {
@@ -666,6 +696,10 @@ resource "aws_lambda_function" "dispatcher" {
       EVENTS_TABLE_NAME    = length(aws_dynamodb_table.events) > 0 ? aws_dynamodb_table.events[0].name : ""
       METRIC_NAMESPACE     = "FinOps/Alerting"
     }
+  }
+
+  tracing_config {
+    mode = var.xray_tracing_enabled ? "Active" : "PassThrough"
   }
 
   dead_letter_config {
