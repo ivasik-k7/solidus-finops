@@ -1,6 +1,6 @@
-# Cost Estimate — FinOps Framework Deployment
+# Cost Estimate — Solidus FinOps Deployment
 
-**As-of date:** 2026-05-28
+**As-of date:** 2026-05-29
 **Region (primary):** `eu-central-1` (Frankfurt). Notes flag where US regions differ materially.
 **Currency:** USD
 **Source:** AWS public on-demand list pricing. Enterprise Discount Program (EDP) and private pricing can reduce these by 5–25%.
@@ -19,7 +19,7 @@
 | Large enterprise account | ~50 000 | on | **~$2 320** |
 | Large enterprise, Config already org-managed | ~50 000 | off (rules only) | **~$50** |
 
-The framework's own moving parts cost **~$5–10/month** regardless of account size. **AWS Config is the dominant variable** and depends on how many resources the account holds and how often they change. If Config recording is already enabled at the organization level (typical with AWS Control Tower), the framework re-uses it and costs almost nothing extra.
+The framework's own moving parts cost **~$11 / month** regardless of account size (KMS + Budgets + Cost Explorer + DDB + CloudWatch + Lambda free-tier compute). **AWS Config is the dominant variable** and depends on how many resources the account holds and how often they change. If Config recording is already enabled at the organization level (typical with AWS Control Tower), the `tag-governance` module re-uses it and costs almost nothing extra.
 
 ---
 
@@ -29,22 +29,21 @@ The framework's own moving parts cost **~$5–10/month** regardless of account s
 |---|---|---|
 | KMS | 1 customer-managed key + 1 alias | Used by every other component |
 | Secrets Manager | 0–2 secrets (Slack, Teams) | Only if webhooks configured |
-| AWS Budgets | 1–10+ budgets | Driven by `var.budgets` map |
-| AWS Cost Anomaly Detection | 1 monitor + 1 subscription | **Free** |
-| AWS Compute Optimizer | Account enrollment | **Free** |
-| AWS Cost Optimization Hub | Account enrollment | **Free** |
+| AWS Budgets | 1–10+ budgets | Driven by `var.budgets_items` map |
 | AWS Cost & Usage Report 2.0 | 1 report definition (us-east-1) | **Free delivery**; pay only for S3 storage |
 | BCM Data Exports (FOCUS 1.0) | 1 export | **Free delivery** |
 | S3 | 3 buckets (cost-data, athena-results, config) | KMS-encrypted, lifecycle managed |
 | Athena workgroup + Glue DB | 1 each | Per-query cost only |
-| AWS Config | 1 recorder + 1–N rules + 1 delivery channel | The expensive line |
-| EventBridge | ~3–4 rules | Scheduling triggers |
-| SNS | 1 topic | Plus N email + 0–1 Lambda subscriptions |
-| Lambda | 6 functions (chat-notifier, 3× idle, scheduler, coverage) | All within free tier in practice |
-| SQS | 6 DLQs | One per Lambda |
-| CloudWatch Logs | 6 log groups + standard Lambda logs | 7-year default retention |
-| CloudWatch Alarms | 12 alarms (2 per Lambda) | Errors + DLQ depth |
-| IAM | 7 roles, 1 inline policy each | No cost |
+| AWS Config | 1 recorder + N rule chunks + 1 delivery channel | The expensive line |
+| EventBridge | ~5–7 rules | Scheduling + Config compliance triggers |
+| SNS | 1 topic | Plus N email + 1 dispatcher Lambda subscription |
+| Lambda | ~10 functions (dispatcher, 6× idle, scheduler, scheduler-discovery, kpi-aggregator, budget-perf, cost-data-health, tag-governance untagged-cost) | All within free tier in practice |
+| SQS | One DLQ per Lambda | SSE-SQS managed encryption (free) |
+| CloudWatch Logs | ~10 log groups + standard Lambda logs | Configurable retention (default 365 d) |
+| CloudWatch Alarms | ~20 alarms (Lambda errors + DLQ depth + KPI thresholds + WoW drift + budget adherence + scheduler-action ceilings) | Most free-tier; few paid |
+| DynamoDB | ~5 tables (alerting events, budgets state, idle findings, scheduler state, KPI snapshots) | All PAY_PER_REQUEST + CMK + PITR |
+| Secrets Manager | 0–N secrets (per Slack / Teams / PagerDuty / Opsgenie / webhook channel configured inline) | KMS-encrypted |
+| IAM | One role per Lambda + per service principal | No cost |
 
 ---
 
@@ -94,9 +93,9 @@ Cost Explorer charges $0.01 per API request.
 
 | Driver | Calls / mo | Cost |
 |---|---|---|
-| `savings-coverage-reporter` Lambda (weekly, 5 calls per run) | 4–5 weeks × 5 calls = 20–25 | **$0.25** |
+| `finops-metrics` aggregator (daily, ~7 calls per run for commitment + anomaly + forecast KPIs) | ~210 / mo | **$2.10** |
 | Console / ad-hoc usage by the FinOps team | varies | $0.20–$2.00 |
-| **Cost Explorer subtotal** | | **~$0.50–$2.00** |
+| **Cost Explorer subtotal** | | **~$2.50–$4.00** |
 
 Console usage is by the human team and not driven by the framework, but worth budgeting.
 
@@ -188,47 +187,65 @@ Total ~10 000 / mo × $1 / 1M = **<$0.01**.
 
 | Function | Invocations / mo | Avg duration | Memory | GB-seconds |
 |---|---|---|---|---|
-| `chat-notifier` | 500 | 1 s | 256 MB | 125 |
+| `dispatcher` (alerting) | 500 | 1 s | 256 MB | 125 |
 | `idle-ebs` | 4 | 30 s | 512 MB | 60 |
 | `idle-eip` | 4 | 10 s | 256 MB | 10 |
 | `idle-snapshot` | 4 | 30 s | 512 MB | 60 |
-| `scheduler` | 8 640 | 10 s | 256 MB | 21 600 |
-| `coverage` | 4 | 60 s | 256 MB | 60 |
-| **Totals** | **~9 160** | | | **~21 915 GB-s** |
+| `idle-nat` | 4 | 30 s | 256 MB | 30 |
+| `idle-eni` | 4 | 30 s | 256 MB | 30 |
+| `idle-lb` | 4 | 30 s | 512 MB | 60 |
+| `scheduler` (5-min tick) | 8 640 | 10 s | 512 MB | 43 200 |
+| `scheduler-discovery` (weekly) | 4 | 60 s | 512 MB | 120 |
+| `kpi-aggregator` (daily) | 30 | 120 s | 512 MB | 1 800 |
+| `budget-performance` (daily) | 30 | 60 s | 512 MB | 900 |
+| `cost-data-health` (daily) | 30 | 30 s | 256 MB | 240 |
+| `tag-governance-untagged-cost` (weekly) | 4 | 60 s | 512 MB | 120 |
+| **Totals** | **~9 260** | | | **~46 755 GB-s** |
 
 Free tier (perpetual, per account):
 - 1 000 000 requests/mo
 - 400 000 GB-seconds/mo
 
-Framework uses **~0.9% of request free tier** and **~5.5% of compute free tier**. Lambda cost = **$0**.
+Framework uses **~1% of request free tier** and **~12% of compute free tier**. Lambda cost = **$0** under free tier.
 
 Even without free tier:
 - $0.20 / 1M requests → $0.002
-- $0.0000166667 / GB-s → $0.37
+- $0.0000166667 / GB-s → $0.78
 
-So worst-case Lambda cost is **<$0.50/mo**.
+So worst-case Lambda cost is **<$1.00 / mo**.
 
 ### 3.10 SQS (DLQs)
 
-6 queues, near-zero traffic (only failed invocations land here). SSE-SQS managed encryption is **free**. Free tier of 1M requests/mo covers normal operation. **Cost: $0**.
+One queue per Lambda (~13 in total), near-zero traffic (only failed invocations land here). SSE-SQS managed encryption is **free**. Free tier of 1M requests/mo covers normal operation. **Cost: $0**.
 
 ### 3.11 CloudWatch Logs
 
 | Component | Ingestion volume / mo | Cost @ $0.57/GB |
 |---|---|---|
-| All 6 Lambdas combined | ~10 MB | **<$0.01** |
+| All ~13 Lambdas combined | ~30 MB | **~$0.02** |
 
-Storage @ $0.03 / GB / mo, 7-year retention:
-- Year 1 cumulative: ~120 MB × $0.03 / 1024 = **<$0.01**
-- Year 7 cumulative: ~840 MB × $0.03 / 1024 = **~$0.03**
+Storage @ $0.03 / GB / mo, configurable retention:
+- 365-day retention: cumulative ~360 MB → **~$0.01 / mo**
+- 7-year retention: cumulative ~2.5 GB → **~$0.08 / mo**
 
 ### 3.12 CloudWatch Alarms
 
 | Item | Unit price | Quantity | Cost |
 |---|---|---|---|
-| Standard-resolution alarm | $0.10 / alarm / mo | 12 (6 Lambdas × 2 alarms) | $1.20 |
+| Standard-resolution alarm | $0.10 / alarm / mo | ~20 (Lambda errors + DLQ depth + KPI thresholds + WoW drift + budget adherence + scheduler ceilings) | $2.00 |
 | Free tier | — | 10 alarms | -$1.00 |
-| **CloudWatch alarms subtotal** | | | **$0.20** |
+| **CloudWatch alarms subtotal** | | | **$1.00** |
+
+### 3.12a DynamoDB
+
+| Table | Storage / mo | RW units / mo | Cost |
+|---|---|---|---|
+| `alerting-events` (DEDUP + AUDIT) | <1 GB | low (per-event) | **<$0.10** |
+| `budgets-state` (trend + audit) | <0.5 GB | very low (daily writes) | **<$0.05** |
+| `idle-findings` (STATE + ACTION) | 1–5 GB | low | **<$0.30** |
+| `scheduler-state` (STATE + ACTION + GSI) | 0.5–3 GB | moderate (per-tick writes × 8 640) | **~$0.50** |
+| `kpi-snapshots` (one row / KPI / day) | <100 MB | very low (~10 writes/day) | **<$0.01** |
+| **DynamoDB subtotal** | | | **~$1.00** |
 
 ### 3.13 Athena
 
@@ -255,18 +272,19 @@ This is the "always-on" cost that doesn't scale with account size:
 | Component | Monthly cost |
 |---|---|
 | KMS | $1.05 |
-| Secrets Manager | $0.80 |
+| Secrets Manager (1 Slack + 1 Teams secret) | $0.80 |
 | AWS Budgets (production example, 9 budgets) | $4.34 |
-| Cost Explorer API (savings-coverage-reporter) | $0.25 |
+| Cost Explorer API (`finops-metrics` daily aggregator) | $2.10 |
 | S3 (cost-data + athena-results) | <$0.10 |
 | SNS | $0.10 |
 | EventBridge | <$0.01 |
 | Lambda | $0 (free tier) |
 | SQS (DLQs) | $0 |
-| CloudWatch Logs | <$0.05 |
-| CloudWatch Alarms | $0.20 |
+| CloudWatch Logs (365-day default) | <$0.05 |
+| CloudWatch Alarms | $1.00 |
+| DynamoDB (5 tables) | $1.00 |
 | Athena (moderate usage) | $0.50 |
-| **Framework baseline** | **~$7.50 / month** |
+| **Framework baseline** | **~$11 / month** |
 
 ---
 
@@ -274,7 +292,7 @@ This is the "always-on" cost that doesn't scale with account size:
 
 ### 5.1 Sandbox — `examples/minimal`
 
-`enable_idle_cleanup = false`, `enable_instance_scheduler = false`, `enable_savings_coverage_reporter = false`, no webhooks. AWS Config recorder still provisioned by default.
+`idle_cleanup_enabled = false`, `instance_scheduler_enabled = false`, `finops_metrics_enabled = false`, `tag_governance_enabled = false`, no webhooks. AWS Config recorder *not* provisioned (no tag-governance).
 
 | Component | Cost |
 |---|---|
@@ -284,13 +302,13 @@ This is the "always-on" cost that doesn't scale with account size:
 | Cost Explorer API | $0 |
 | S3 | <$0.10 |
 | SNS | <$0.05 |
-| Lambda (only chat-notifier conditionally; not deployed here) | $0 |
+| Lambda (only dispatcher, no events triggering it) | $0 |
 | CloudWatch Logs / Alarms | <$0.20 |
+| DynamoDB (alerting events table only) | <$0.05 |
 | Athena (light, 20 queries) | <$0.05 |
-| **AWS Config recorder** (200 resources × 30 changes/mo) | **$18** |
-| **Sandbox total** | **~$20 / month** |
+| **Sandbox total** | **~$2 / month** |
 
-With `enable_config_recorder = false`: drops to **~$3 / month**.
+If `tag_governance_enabled = true` is added later with a default `tag_governance_record_global_resources = true`, expect AWS Config to add **$18+ / month** for a 200-resource sandbox.
 
 ### 5.2 Small production
 
@@ -315,7 +333,7 @@ With `enable_config_recorder = false`: drops to **~$3 / month**.
 | Athena (moderate-to-heavy usage by FinOps team) | $2 |
 | **Mid-size total** | **~$810 / month** |
 
-If Config recorder is **already enabled org-wide** (recommended; set `enable_config_recorder = false`), CI cost drops to $0 and only rule-eval cost remains: **~$270 / month**. Combined: **~$280 / month**.
+If Config recorder is **already enabled org-wide** (recommended; the framework's tag-governance module re-uses it instead of provisioning its own), CI cost drops to $0 and only rule-eval cost remains: **~$270 / month**. Combined: **~$280 / month**.
 
 ### 5.4 Large enterprise account
 
@@ -338,13 +356,16 @@ With Config recorder already enabled org-wide: **~$950 / month** (rule evals onl
 
 Ranked by impact:
 
-1. **`enable_config_recorder`** — single biggest variable. Saves 60–80% of total framework cost if Config is already on at the org level.
-2. **`tag_compliance_resource_types`** — every additional type multiplies rule evaluations. Default has 9 types; trimming to 4 (EC2 + RDS + S3 + Lambda) cuts Config rule cost by ~55%.
-3. **`required_tags` count** — more than 6 tags triggers a second Config rule (chunking), doubling rule evaluations on every change.
-4. **Athena query patterns** — partition-pruned queries are pennies; full-table scans on 7 years of CUR are dollars per query.
-5. **`log_retention_days`** — 2557 (7 yr) is for SOX/PCI. Non-prod accounts should drop to 365.
-6. **`var.budgets` count** — first 2 free, then $0.62 / budget / mo. Cost-category-scoped budgets are useful but additive.
-7. **Lambda runtime** — currently fixed at Python 3.12. If you ever increase memory or duration, free-tier headroom narrows.
+1. **Whether AWS Config is enabled org-wide** — single biggest variable. If the org already runs Config (typical with Control Tower), the framework's `tag-governance` module re-uses that recorder and you save 60–80% of total framework cost. If not, the recorder needs to be provisioned alongside.
+2. **`tag_governance_compliance_resource_types`** — every additional type multiplies rule evaluations. Default has 9 types; trimming to 4 (EC2 + RDS + S3 + Lambda) cuts Config rule cost by ~55%.
+3. **`tag_governance_required_tags` count** — more than 6 tags triggers a second Config rule (chunking), doubling rule evaluations on every change.
+4. **`aws_secondary_regions`** — adding regions to scanning modules (`idle-resource-cleanup`, `instance-scheduler`) doesn't materially change Lambda cost (still free-tier-comfortable) but DOES multiply Cost Explorer + Athena calls if you also enable per-region KPIs in `finops-metrics`.
+5. **Athena query patterns** — partition-pruned queries are pennies; full-table scans on 7 years of CUR are dollars per query. The framework's named queries are partition-pruned.
+6. **`log_retention_days`** — 2557 (7 yr) is for SOX/PCI. Non-prod accounts should drop to 365.
+7. **`budgets_items` count** — first 2 free, then $0.62 / budget / mo. Cost-category-scoped budgets are useful but additive.
+8. **`finops_metrics_custom_kpis` count** — each custom KPI adds one Athena query per daily aggregator run. 10 custom KPIs × 30 days × ~10 MB scanned = trivial; 10 custom KPIs each scanning a full CUR = expensive.
+9. **`finops_metrics_tag_value_dashboard_tag`** — emits one CloudWatch metric per distinct tag value per day. Hundreds of values → still pennies; thousands → meaningful.
+10. **`finops_metrics_snapshot_retention_days`** — controls DDB storage for KPI history. Default 400d is ~100 MB total. Setting it to 7 yr is still <$1 / mo.
 
 ---
 
@@ -366,12 +387,13 @@ A typical FinOps program with this capability stack catches **5–15% of cloud s
 
 ## 8. Recommendations to keep cost predictable
 
-1. **First, check whether AWS Config is already enabled at the organization level.** Most banks using Control Tower have it. If so, set `enable_config_recorder = false`. Single biggest lever.
-2. **Tune `tag_compliance_resource_types`.** Start with EC2, RDS, S3, Lambda only; expand once tagging discipline is in place.
-3. **Use `examples/minimal` in sandboxes.** Lambdas and chat notifier off; `enable_focus_export = false`; shorter `log_retention_days`.
+1. **First, check whether AWS Config is already enabled at the organization level.** Most banks using Control Tower have it. If so, leave `tag_governance_record_global_resources = false` and let the framework re-use the org-managed recorder. Single biggest lever.
+2. **Tune `tag_governance_compliance_resource_types`.** Start with EC2, RDS, S3, Lambda only; expand once tagging discipline is in place.
+3. **Use `examples/minimal` in sandboxes.** All execution Lambdas off, `cost_data_exports_focus_enabled = false`, shorter `log_retention_days`.
 4. **Teach analysts partition-pruning.** Athena query cost is entirely user-driven.
-5. **Defer enabling `idle_cleanup_dry_run = false`** until you have a full reporting cycle of findings — running in dry-run mode is essentially free.
+5. **Defer flipping `idle_cleanup_dry_run = false`** until you have a full reporting cycle of findings — running in dry-run mode is essentially free.
 6. **Measure actual churn after one month.** Re-estimate Config costs using `aws configservice get-aggregate-discovered-resource-counts` and CloudTrail event counts.
+7. **Start with fewer custom KPIs.** Add `finops_metrics_custom_kpis` entries one at a time and confirm each new Athena query is partition-pruned (uses `billing_period = date_format(current_date, '%Y-%m')`).
 
 ---
 
@@ -388,7 +410,7 @@ A typical FinOps program with this capability stack catches **5–15% of cloud s
 | CloudWatch alarms free tier | First 10 standard-resolution alarms per account |
 | Lambda free tier | 1M requests + 400k GB-s per account per month, perpetual |
 | Athena minimum scan | 10 MB per query (rounded up) |
-| Pricing source | AWS public on-demand list as of 2026-05-28 |
+| Pricing source | AWS public on-demand list as of 2026-05-29 |
 
 ### Pricing references used
 

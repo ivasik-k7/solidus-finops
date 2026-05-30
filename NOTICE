@@ -1,0 +1,30 @@
+Solidus FinOps
+Copyright 2026 Ivan Kovtun
+
+This product includes software developed by Ivan Kovtun.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+---
+
+Third-party components
+
+This product invokes the following AWS services at runtime (not bundled):
+- Amazon Web Services SDK for Python (boto3, botocore) — Apache License 2.0,
+  available via the AWS Lambda runtime; no source bundled in this repository.
+
+This product's documentation references third-party FinOps tooling for
+context only; no source from those tools is bundled:
+- Apptio Cloudability — proprietary, Apptio Inc.
+- AWS Compute Optimizer, AWS Cost Optimization Hub, AWS Cost Explorer,
+  AWS Budgets, AWS Cost Anomaly Detection — proprietary, Amazon Web
+  Services, Inc.
+
+Diagrams in /diagrams/ are generated using the diagrams Python library
+(https://diagrams.mingrammer.com/) — MIT License — and rendered with
+Graphviz — Common Public License 1.0. Neither library is bundled; both
+are dependencies declared in /diagrams/requirements.txt.

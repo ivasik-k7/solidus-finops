@@ -1,0 +1,24 @@
+blank_issues_enabled: false
+
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/<org>/<repo>/security/advisories/new
+    about: |
+      Do NOT open a public issue for security vulnerabilities. Use the
+      private Security Advisories flow. See SECURITY.md for details.
+  - name: Question / how-to
+    url: https://github.com/<org>/<repo>/discussions/categories/q-a
+    about: |
+      For "how do I configure X?" questions, open a thread in Discussions.
+      Most first-time questions are answered there or in the docs.
+  - name: Discuss design / architecture
+    url: https://github.com/<org>/<repo>/discussions/categories/ideas
+    about: |
+      For architecture proposals, breaking-change suggestions, or
+      "what if the framework also did Y?" — start a Discussion before
+      a Feature Request issue so the design conversation has space.
+  - name: Read the documentation
+    url: https://github.com/<org>/<repo>/blob/main/README.md
+    about: |
+      Most "is this a bug or am I misconfiguring?" questions are
+      answered in README.md + docs/EDGE_CASES.md in the affected module.

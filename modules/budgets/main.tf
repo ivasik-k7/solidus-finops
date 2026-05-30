@@ -675,6 +675,50 @@ resource "aws_cloudwatch_metric_alarm" "adherence_low" {
   tags                = var.default_tags
 }
 
+# Metric-math alarm — fires if ANY budget's BurnRateDaysToBreach drops below
+# the threshold. Each budget contributes a metric query keyed by its position
+# (m0..mN) so CloudWatch's ID requirements (lowercase + no hyphens) are met
+# regardless of what characters the budget keys contain.
+resource "aws_cloudwatch_metric_alarm" "burn_rate_low" {
+  count = (
+    var.enable_performance_tracking
+    && length(var.budgets) > 0
+    && var.burn_rate_alarm_days_to_breach != null
+  ) ? 1 : 0
+
+  alarm_name          = "${var.name_prefix}-budget-burn-rate-low"
+  alarm_description   = "Any budget's projected days-to-breach dropped below threshold — at the current spend rate, a budget breaches sooner than var.burn_rate_alarm_days_to_breach."
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = 1
+  threshold           = var.burn_rate_alarm_days_to_breach
+  treat_missing_data  = "ignore"
+  alarm_actions       = [var.events_topic_arn]
+  ok_actions          = [var.events_topic_arn]
+  tags                = var.default_tags
+
+  dynamic "metric_query" {
+    for_each = { for i, k in keys(var.budgets) : k => "m${i}" }
+    content {
+      id          = metric_query.value
+      return_data = false
+      metric {
+        namespace   = local.metric_namespace
+        metric_name = "BurnRateDaysToBreach"
+        period      = 86400
+        stat        = "Minimum"
+        dimensions  = { Budget = "${var.name_prefix}-${metric_query.key}" }
+      }
+    }
+  }
+
+  metric_query {
+    id          = "min_all"
+    return_data = true
+    label       = "Minimum days-to-breach across all budgets"
+    expression  = "MIN([${join(",", [for i in range(length(var.budgets)) : "m${i}"])}])"
+  }
+}
+
 ###############################################################################
 # Auto-provisioned CloudWatch dashboard
 ###############################################################################

@@ -180,9 +180,9 @@ The point of Layer 3 is to give the FinOps lead a number to drive: "our untagged
 
 If you're starting from zero tag governance:
 
-1. **Week 1**: Deploy the tag-governance module with `enable_untagged_cost_report = false`. Look at the Config rule findings.
-2. **Week 2–4**: Backfill tags on the top-50 highest-cost resources. Add `tag_drift_watched_keys` for the allocation set.
-3. **Month 2**: Turn on the untagged-cost report. Establish a baseline `untagged_cost_alarm_threshold_usd`. Start the tag-health score conversation with stakeholders.
+1. **Week 1**: Deploy the tag-governance module with `tag_governance_untagged_cost_report_enabled = false`. Look at the Config rule findings.
+2. **Week 2–4**: Backfill tags on the top-50 highest-cost resources. Add `tag_governance_drift_watched_keys` for the allocation set.
+3. **Month 2**: Turn on the untagged-cost report. Establish a baseline `tag_governance_untagged_cost_alarm_threshold_usd`. Start the tag-health score conversation with stakeholders.
 4. **Month 3**: Implement Layer 1 (IAM RequestTag deny) for at least `ec2:RunInstances` and `rds:CreateDBInstance` in non-prod first, then prod.
 5. **Month 6**: Drive `TagHealthScore` ≥ 90 as a steering-committee metric. Add value-validation regexes (custom Config rules) for the highest-value tags.
 

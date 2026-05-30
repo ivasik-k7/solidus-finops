@@ -200,7 +200,6 @@ variable "audit_log" {
 
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
-data "aws_region" "current" {}
 
 ###############################################################################
 # Local — synthesise legacy inputs into `channels`, flatten for resources
@@ -415,83 +414,85 @@ resource "aws_sns_topic_subscription" "email" {
 ###############################################################################
 
 resource "aws_secretsmanager_secret" "slack" {
-  for_each = local.slack_inline_secrets
+  # Iterate the non-sensitive key set so tflint's static evaluator doesn't choke.
+  # Look the sensitive value up from the map by key inside the resource body.
+  for_each = nonsensitive(toset(keys(local.slack_inline_secrets)))
 
-  name                    = "${var.name_prefix}-channel-${each.key}"
-  description             = "Slack webhook for channel '${each.value.label}'"
+  name                    = "${var.name_prefix}-channel-${each.value}"
+  description             = "Slack webhook for channel '${local.slack_inline_secrets[each.value].label}'"
   kms_key_id              = var.kms_key_arn
   recovery_window_in_days = 30
   tags                    = var.default_tags
 }
 
 resource "aws_secretsmanager_secret_version" "slack" {
-  for_each      = local.slack_inline_secrets
-  secret_id     = aws_secretsmanager_secret.slack[each.key].id
-  secret_string = each.value.webhook_url
+  for_each      = nonsensitive(toset(keys(local.slack_inline_secrets)))
+  secret_id     = aws_secretsmanager_secret.slack[each.value].id
+  secret_string = local.slack_inline_secrets[each.value].webhook_url
 }
 
 resource "aws_secretsmanager_secret" "teams" {
-  for_each = local.teams_inline_secrets
+  for_each = nonsensitive(toset(keys(local.teams_inline_secrets)))
 
-  name                    = "${var.name_prefix}-channel-${each.key}"
-  description             = "Teams webhook for channel '${each.value.label}'"
+  name                    = "${var.name_prefix}-channel-${each.value}"
+  description             = "Teams webhook for channel '${local.teams_inline_secrets[each.value].label}'"
   kms_key_id              = var.kms_key_arn
   recovery_window_in_days = 30
   tags                    = var.default_tags
 }
 
 resource "aws_secretsmanager_secret_version" "teams" {
-  for_each      = local.teams_inline_secrets
-  secret_id     = aws_secretsmanager_secret.teams[each.key].id
-  secret_string = each.value.webhook_url
+  for_each      = nonsensitive(toset(keys(local.teams_inline_secrets)))
+  secret_id     = aws_secretsmanager_secret.teams[each.value].id
+  secret_string = local.teams_inline_secrets[each.value].webhook_url
 }
 
 resource "aws_secretsmanager_secret" "pagerduty" {
-  for_each = local.pagerduty_inline_secrets
+  for_each = nonsensitive(toset(keys(local.pagerduty_inline_secrets)))
 
-  name                    = "${var.name_prefix}-channel-${each.key}"
-  description             = "PagerDuty integration key for channel '${each.value.label}'"
+  name                    = "${var.name_prefix}-channel-${each.value}"
+  description             = "PagerDuty integration key for channel '${local.pagerduty_inline_secrets[each.value].label}'"
   kms_key_id              = var.kms_key_arn
   recovery_window_in_days = 30
   tags                    = var.default_tags
 }
 
 resource "aws_secretsmanager_secret_version" "pagerduty" {
-  for_each      = local.pagerduty_inline_secrets
-  secret_id     = aws_secretsmanager_secret.pagerduty[each.key].id
-  secret_string = each.value.integration_key
+  for_each      = nonsensitive(toset(keys(local.pagerduty_inline_secrets)))
+  secret_id     = aws_secretsmanager_secret.pagerduty[each.value].id
+  secret_string = local.pagerduty_inline_secrets[each.value].integration_key
 }
 
 resource "aws_secretsmanager_secret" "opsgenie" {
-  for_each = local.opsgenie_inline_secrets
+  for_each = nonsensitive(toset(keys(local.opsgenie_inline_secrets)))
 
-  name                    = "${var.name_prefix}-channel-${each.key}"
-  description             = "Opsgenie API key for channel '${each.value.label}'"
+  name                    = "${var.name_prefix}-channel-${each.value}"
+  description             = "Opsgenie API key for channel '${local.opsgenie_inline_secrets[each.value].label}'"
   kms_key_id              = var.kms_key_arn
   recovery_window_in_days = 30
   tags                    = var.default_tags
 }
 
 resource "aws_secretsmanager_secret_version" "opsgenie" {
-  for_each      = local.opsgenie_inline_secrets
-  secret_id     = aws_secretsmanager_secret.opsgenie[each.key].id
-  secret_string = each.value.api_key
+  for_each      = nonsensitive(toset(keys(local.opsgenie_inline_secrets)))
+  secret_id     = aws_secretsmanager_secret.opsgenie[each.value].id
+  secret_string = local.opsgenie_inline_secrets[each.value].api_key
 }
 
 resource "aws_secretsmanager_secret" "webhook" {
-  for_each = local.webhook_inline_secrets
+  for_each = nonsensitive(toset(keys(local.webhook_inline_secrets)))
 
-  name                    = "${var.name_prefix}-channel-${each.key}"
-  description             = "Generic webhook URL for channel '${each.value.label}'"
+  name                    = "${var.name_prefix}-channel-${each.value}"
+  description             = "Generic webhook URL for channel '${local.webhook_inline_secrets[each.value].label}'"
   kms_key_id              = var.kms_key_arn
   recovery_window_in_days = 30
   tags                    = var.default_tags
 }
 
 resource "aws_secretsmanager_secret_version" "webhook" {
-  for_each      = local.webhook_inline_secrets
-  secret_id     = aws_secretsmanager_secret.webhook[each.key].id
-  secret_string = each.value.url
+  for_each      = nonsensitive(toset(keys(local.webhook_inline_secrets)))
+  secret_id     = aws_secretsmanager_secret.webhook[each.value].id
+  secret_string = local.webhook_inline_secrets[each.value].url
 }
 
 ###############################################################################

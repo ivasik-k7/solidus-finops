@@ -60,14 +60,4 @@ locals {
     DASHBOARD_NAME                = "${var.name_prefix}-kpis"
     NAME_PREFIX                   = var.name_prefix
   }
-
-  # Convenience: a flat list of all KPI metric names that get emitted as
-  # scalars. Used by outputs.tf to advertise the available metrics.
-  builtin_scalar_kpi_metrics = compact([
-    var.builtin_kpis_enabled.allocation_coverage == false ? "" : "AllocationCoveragePct",
-    var.builtin_kpis_enabled.commitment_coverage == false ? "" : "CommitmentCoveragePct",
-    var.builtin_kpis_enabled.commitment_utilization == false ? "" : "CommitmentUtilizationPct",
-    var.builtin_kpis_enabled.anomaly_impact == false ? "" : "AnomalyImpactUsdMtd",
-    var.builtin_kpis_enabled.forecast_drift == false ? "" : "ForecastAbsDriftPct",
-  ])
 }

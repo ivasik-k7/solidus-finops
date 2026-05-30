@@ -1,0 +1,120 @@
+# Dependabot configuration for Solidus FinOps
+#
+# Keeps three things up to date:
+#   1. Terraform provider version constraints in versions.tf files
+#   2. GitHub Actions versions in .github/workflows/
+#   3. Python dependencies in diagrams/requirements.txt
+#
+# Major bumps to the AWS provider land as a PR you review — never auto-merge
+# for a framework that controls KMS keys + IAM + destructive Lambdas.
+
+version: 2
+updates:
+
+  # ---------------------------------------------------------------------------
+  # GitHub Actions
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(ci)"
+    labels:
+      - dependencies
+      - ci
+    groups:
+      gha-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ---------------------------------------------------------------------------
+  # Terraform — root
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: terraform
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - dependencies
+      - terraform
+    ignore:
+      # Major AWS provider bumps must be a deliberate, reviewed change —
+      # they often add deprecations that affect every module.
+      - dependency-name: "hashicorp/aws"
+        update-types: ["version-update:semver-major"]
+
+  # ---------------------------------------------------------------------------
+  # Terraform — modules
+  # One directory per module so PRs are narrowly scoped.
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: terraform
+    directory: /modules/alerting
+    schedule: { interval: weekly, day: monday, time: "06:00", timezone: Europe/Berlin }
+    commit-message: { prefix: "chore(deps)" }
+    labels: [dependencies, terraform, module-alerting]
+
+  - package-ecosystem: terraform
+    directory: /modules/budgets
+    schedule: { interval: weekly, day: monday, time: "06:00", timezone: Europe/Berlin }
+    commit-message: { prefix: "chore(deps)" }
+    labels: [dependencies, terraform, module-budgets]
+
+  - package-ecosystem: terraform
+    directory: /modules/cost-data-exports
+    schedule: { interval: weekly, day: monday, time: "06:00", timezone: Europe/Berlin }
+    commit-message: { prefix: "chore(deps)" }
+    labels: [dependencies, terraform, module-cost-data-exports]
+
+  - package-ecosystem: terraform
+    directory: /modules/finops-metrics
+    schedule: { interval: weekly, day: monday, time: "06:00", timezone: Europe/Berlin }
+    commit-message: { prefix: "chore(deps)" }
+    labels: [dependencies, terraform, module-finops-metrics]
+
+  - package-ecosystem: terraform
+    directory: /modules/idle-resource-cleanup
+    schedule: { interval: weekly, day: monday, time: "06:00", timezone: Europe/Berlin }
+    commit-message: { prefix: "chore(deps)" }
+    labels: [dependencies, terraform, module-idle-resource-cleanup]
+
+  - package-ecosystem: terraform
+    directory: /modules/instance-scheduler
+    schedule: { interval: weekly, day: monday, time: "06:00", timezone: Europe/Berlin }
+    commit-message: { prefix: "chore(deps)" }
+    labels: [dependencies, terraform, module-instance-scheduler]
+
+  - package-ecosystem: terraform
+    directory: /modules/tag-governance
+    schedule: { interval: weekly, day: monday, time: "06:00", timezone: Europe/Berlin }
+    commit-message: { prefix: "chore(deps)" }
+    labels: [dependencies, terraform, module-tag-governance]
+
+  # ---------------------------------------------------------------------------
+  # Python — diagram-generation dependencies
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: pip
+    directory: /diagrams
+    schedule:
+      interval: monthly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - dependencies
+      - python
+      - diagrams

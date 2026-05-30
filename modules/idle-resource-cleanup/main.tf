@@ -152,7 +152,6 @@ variable "eni_schedule" {
   default = "cron(0 14 ? * MON *)"
 }
 
-data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 data "aws_region" "current" {}
 

@@ -1,4 +1,4 @@
-# Terraform Enterprise Setup
+# Terraform Enterprise Setup — Solidus FinOps
 
 ## Workspace configuration
 
@@ -6,12 +6,12 @@ Create a TFE workspace with these properties:
 
 | Setting | Value |
 |---|---|
-| Workspace name | `finops-shared` (or per your naming convention) |
+| Workspace name | `solidus-finops-shared` (or per your naming convention) |
 | Execution mode | Remote |
 | Apply method | Manual apply (recommended for first month, then auto if confident) |
 | Terraform version | 1.6 or later |
-| VCS provider | Whichever your bank uses (GitHub Enterprise, GitLab, Bitbucket) |
-| Working directory | Repo root (where `main.tf` lives), or `examples/production` |
+| VCS provider | Whichever your org uses (GitHub Enterprise, GitLab, Bitbucket) |
+| Working directory | Repo root (where `main.tf` lives), or one of `examples/*` |
 | Auto-apply | Off initially, on once stable |
 | Run triggers | None |
 
@@ -28,14 +28,14 @@ Set workspace environment variables:
 | Variable | Value | Sensitive |
 |---|---|---|
 | `TFC_AWS_PROVIDER_AUTH` | `true` | no |
-| `TFC_AWS_RUN_ROLE_ARN` | `arn:aws:iam::<account-id>:role/tfe-finops` | no |
-| `AWS_DEFAULT_REGION` | `eu-central-1` | no |
+| `TFC_AWS_RUN_ROLE_ARN` | `arn:aws:iam::<account-id>:role/tfe-solidus-finops` | no |
+| `AWS_DEFAULT_REGION` | `eu-central-1` (must match `var.aws_primary_region`) | no |
 
-In AWS, create the role `tfe-finops` with a trust policy that accepts TFE's OIDC token, scoped to this specific workspace.
+In AWS, create the role `tfe-solidus-finops` with a trust policy that accepts TFE's OIDC token, scoped to this specific workspace.
 
 ### Option B — Static credentials
 
-Less ideal, but works. Create an IAM user `tfe-finops`, attach the permissions from `GETTING_STARTED.md`, generate keys, store in TFE:
+Less ideal, but works. Create an IAM user `tfe-solidus-finops`, attach the permissions from `GETTING_STARTED.md`, generate keys, store in TFE:
 
 | Variable | Sensitive |
 |---|---|
@@ -54,13 +54,16 @@ These should be set in the workspace's Terraform variables section (not as envir
 | `namespace` | yes | no |
 | `environment` | no (defaults `shared`) | no |
 | `stack_name` | no (defaults `finops`) | no |
-| `aws_region` | no (defaults `eu-central-1`) | no |
-| `budget_currency` | no (defaults `USD`) | no |
-| `budgets` | yes (set to `{}` to disable) | no |
-| `notification_emails` | yes | no |
-| `slack_webhook_url` | no | yes |
-| `teams_webhook_url` | no | yes |
+| `aws_primary_region` | no (defaults `eu-central-1`) | no |
+| `aws_secondary_regions` | no (defaults `[]`) | no |
+| `budgets_currency` | no (defaults `USD`) | no |
+| `budgets_items` | yes (set to `{}` to disable) | no |
+| `alerting_legacy_emails` | yes if no `alerting_channels` configured | no |
+| `alerting_slack_webhook_url` | no | yes |
+| `alerting_teams_webhook_url` | no | yes |
 | Plus any from `terraform.auto.tfvars.example` you want to override | | |
+
+For multi-channel alerting (Slack channel routing by severity, PagerDuty, Opsgenie, generic webhooks, SQS), use the richer `alerting_channels` object variable instead of the legacy single-webhook inputs — see [modules/alerting/README.md](../modules/alerting/README.md).
 
 ## Workspace permissions
 
@@ -84,18 +87,19 @@ Recommended team RBAC:
 If your TFE has Sentinel or OPA enabled, recommended policies for this workspace:
 
 1. **Deny destructive changes to the KMS key.** The framework sets `prevent_destroy = true` and a 30-day deletion window. A run that removes either should require explicit override.
-2. **Deny `force_destroy = true` on the cost-data S3 bucket.** Combined with the existing `prevent_destroy`, this is double protection for the most important data the framework owns.
-3. **Require approval for any change to `cost_categories`.** Chargeback logic changes are financially material.
-4. **Limit changes to `notification_emails` to a specific approver group.** Prevents silent muting of alerts.
+2. **Deny `force_destroy = true` on the cost-data S3 bucket and the audit DDB tables.** Combined with the existing `prevent_destroy`, this is double protection for the most important data the framework owns.
+3. **Require approval for any change to `tag_governance_required_tags` or `tag_governance_taxonomy`.** Tagging-rule changes propagate to allocation and chargeback — financially material.
+4. **Limit changes to `alerting_legacy_emails` / `alerting_channels` to a specific approver group.** Prevents silent muting of alerts.
 5. **Require approval for any change that disables a Lambda alarm.** The framework's audit assumption is that silent Lambda failures are impossible.
+6. **Require approval for any change that flips `idle_cleanup_dry_run` to `false`** or sets `instance_scheduler_max_actions_per_tick` above an org-defined ceiling. These are the two knobs that govern destructive blast radius.
 
 ## Run notifications
 
 Wire workspace notifications to:
 
-- Slack channel `#finops-terraform` for all run events
+- Slack channel `#solidus-finops-terraform` (or your equivalent) for all run events
 - Email distribution for failed applies
-- ServiceNow/Jira integration for any run requiring approval
+- ServiceNow / Jira integration for any run requiring approval
 
 ## Disaster recovery
 

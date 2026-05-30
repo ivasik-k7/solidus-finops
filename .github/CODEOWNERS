@@ -1,0 +1,90 @@
+# CODEOWNERS — review routing for Solidus FinOps
+#
+# Each line maps a path pattern to one or more owners. Owners are
+# automatically requested as reviewers when a PR touches matching files.
+# Last-match wins; the catch-all at the top is overridden by the more
+# specific rules below.
+#
+# Replace @ivankovtun with your team's GitHub handles before adopting.
+# For a team owner, use the @org/team-name form (requires the team to
+# exist in the org).
+
+# ---------------------------------------------------------------------------
+# Default reviewer for any file in the repo
+# ---------------------------------------------------------------------------
+*                                       @ivankovtun
+
+# ---------------------------------------------------------------------------
+# Root composition + cross-cutting contract
+#
+# Changes here affect every consumer. Require maintainer review.
+# ---------------------------------------------------------------------------
+/main.tf                                @ivankovtun
+/variables.tf                           @ivankovtun
+/outputs.tf                             @ivankovtun
+/locals.tf                              @ivankovtun
+/providers.tf                           @ivankovtun
+/versions.tf                            @ivankovtun
+/CHANGELOG.md                           @ivankovtun
+
+# ---------------------------------------------------------------------------
+# Documentation
+#
+# Adjust the docs-owner team if you have a dedicated docs reviewer.
+# ---------------------------------------------------------------------------
+/README.md                              @ivankovtun
+/CONTRIBUTING.md                        @ivankovtun
+/CODE_OF_CONDUCT.md                     @ivankovtun
+/SECURITY.md                            @ivankovtun
+/SUPPORT.md                             @ivankovtun
+/docs/                                  @ivankovtun
+
+# ---------------------------------------------------------------------------
+# Per-module ownership
+#
+# Map each module to the team that operates the AWS service it manages.
+# A platform-team / SRE team is a reasonable default; route specific
+# modules to specialised teams as needed.
+# ---------------------------------------------------------------------------
+/modules/alerting/                      @ivankovtun
+/modules/budgets/                       @ivankovtun
+/modules/cost-data-exports/             @ivankovtun
+/modules/finops-metrics/                @ivankovtun
+/modules/idle-resource-cleanup/         @ivankovtun
+/modules/instance-scheduler/            @ivankovtun
+/modules/tag-governance/                @ivankovtun
+
+# Lambda Python sources — code review by anyone in the maintainer set
+**/lambda/**/*.py                       @ivankovtun
+**/scripts/*.sh                         @ivankovtun
+
+# ---------------------------------------------------------------------------
+# Security-sensitive paths — require additional review
+#
+# Use a separate `@<org>/security` team if you have one. Two-reviewer
+# branch protection rules + CODEOWNERS together give you a four-eyes
+# control on these paths.
+# ---------------------------------------------------------------------------
+/LICENSE                                @ivankovtun
+/NOTICE                                 @ivankovtun
+/SECURITY.md                            @ivankovtun
+**/iam.tf                               @ivankovtun
+**/kms*.tf                              @ivankovtun
+
+# ---------------------------------------------------------------------------
+# CI + governance configuration
+# ---------------------------------------------------------------------------
+/.github/                               @ivankovtun
+/.tflint.hcl                            @ivankovtun
+/.pre-commit-config.yaml                @ivankovtun
+/.editorconfig                          @ivankovtun
+
+# ---------------------------------------------------------------------------
+# Examples — anyone can suggest improvements, maintainer signs off
+# ---------------------------------------------------------------------------
+/examples/                              @ivankovtun
+
+# ---------------------------------------------------------------------------
+# Diagrams — visual changes should be reviewed by someone who can render them
+# ---------------------------------------------------------------------------
+/diagrams/                              @ivankovtun

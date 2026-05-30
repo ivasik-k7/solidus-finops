@@ -1,0 +1,158 @@
+name: Bug report
+description: Something in the framework isn't behaving the way it's documented to.
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Before submitting:
+
+        - Search [open issues](https://github.com/<org>/<repo>/issues) for duplicates.
+        - Read the affected module's `docs/EDGE_CASES.md` — most "weird behaviour" is a documented edge case.
+        - **For security vulnerabilities, do NOT use this form.** See [SECURITY.md](https://github.com/<org>/<repo>/blob/main/SECURITY.md).
+
+  - type: dropdown
+    id: module
+    attributes:
+      label: Affected module
+      description: Which part of the framework misbehaves?
+      options:
+        - root composition
+        - modules/alerting
+        - modules/budgets
+        - modules/cost-data-exports
+        - modules/finops-metrics
+        - modules/idle-resource-cleanup
+        - modules/instance-scheduler
+        - modules/tag-governance
+        - examples/minimal
+        - examples/selective
+        - examples/production
+        - examples/cloudability-complement
+        - docs / other
+    validations:
+      required: true
+
+  - type: input
+    id: framework_version
+    attributes:
+      label: Framework version
+      description: Git tag or commit SHA you have checked out.
+      placeholder: v0.2.1 (or commit SHA)
+    validations:
+      required: true
+
+  - type: input
+    id: terraform_version
+    attributes:
+      label: Terraform version
+      description: Output of `terraform version`.
+      placeholder: Terraform v1.6.6 on linux_amd64; provider hashicorp/aws v5.60.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened
+      description: A clear, concise description of the actual behaviour.
+      placeholder: |
+        After enabling `instance_scheduler_enabled = true`, the scheduler
+        Lambda fails with "InvalidParameter: ..." on every tick.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What was supposed to happen instead?
+      placeholder: |
+        The scheduler should iterate the regions and emit ActionStarted /
+        ActionStopped metrics. Per the module README, my Schedule-tagged
+        instances should start/stop on the office-hours-cet schedule.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: |
+        The minimal Terraform config that reproduces this. Ideally adapted
+        from one of `examples/*` with one or two lines changed. Use
+        ```hcl code blocks ``` for clarity.
+      placeholder: |
+        ```hcl
+        module "finops" {
+          source = "git::https://github.com/<org>/<repo>.git?ref=v0.2.1"
+
+          namespace          = "test"
+          aws_primary_region = "eu-central-1"
+
+          instance_scheduler_enabled = true
+          instance_scheduler_schedules = {
+            office-hours-cet = {
+              days     = ["MON", "TUE", "WED", "THU", "FRI"]
+              start    = "08:00"
+              stop     = "18:00"
+              timezone = "Europe/Berlin"
+            }
+          }
+        }
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: terraform_output
+    attributes:
+      label: Terraform plan / apply output
+      description: |
+        The relevant section of `terraform plan` or `terraform apply` output.
+        **Redact sensitive values** (account IDs, KMS ARNs, webhook URLs).
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: lambda_logs
+    attributes:
+      label: Lambda logs (if runtime issue)
+      description: |
+        Last ~50 lines of the affected Lambda's CloudWatch log group
+        around the error. Redact sensitive values.
+      render: text
+    validations:
+      required: false
+
+  - type: dropdown
+    id: workaround
+    attributes:
+      label: Have you found a workaround?
+      options:
+        - "No"
+        - "Yes, documented below"
+        - "Not applicable"
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround_detail
+    attributes:
+      label: Workaround details
+      description: If you found a workaround, share it so others hitting the same issue can use it while we ship a fix.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: I have searched existing issues + Discussions for this problem.
+          required: true
+        - label: I have read the affected module's README and (where applicable) `docs/EDGE_CASES.md`.
+          required: true
+        - label: This is NOT a security vulnerability. (If it is, close this issue and follow SECURITY.md instead.)
+          required: true

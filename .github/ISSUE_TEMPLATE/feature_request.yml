@@ -1,0 +1,121 @@
+name: Feature request
+description: Propose a new capability, module, or improvement.
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing an improvement. Before submitting:
+
+        - For substantial design proposals, start in
+          [Discussions → Ideas](https://github.com/<org>/<repo>/discussions/categories/ideas)
+          first. Big features land faster when the design conversation
+          happens before the implementation.
+        - For a small, well-scoped addition (one new variable, a small
+          improvement to existing behaviour), this form is fine.
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      description: Roughly how large is this change?
+      options:
+        - Small — one variable, one resource, one widget
+        - Medium — a notable feature inside an existing module
+        - Large — new module, or change to framework-wide patterns
+    validations:
+      required: true
+
+  - type: dropdown
+    id: module
+    attributes:
+      label: Affected module
+      options:
+        - root composition
+        - new module (describe in details below)
+        - modules/alerting
+        - modules/budgets
+        - modules/cost-data-exports
+        - modules/finops-metrics
+        - modules/idle-resource-cleanup
+        - modules/instance-scheduler
+        - modules/tag-governance
+        - docs / examples / tooling
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: |
+        What FinOps practice problem does this solve? What's painful or
+        impossible to do today?
+      placeholder: |
+        Today the framework emits per-resource action counts but doesn't
+        track cumulative monthly savings. Our finance team needs a single
+        number per month to put in the FinOps report.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: |
+        Sketch what the change looks like. HCL snippets, new metric names,
+        new variable names, etc. Don't worry about getting it right — the
+        maintainer + community will iterate.
+      placeholder: |
+        Add `finops_metrics_emit_monthly_savings = true` (default false).
+        The aggregator computes the monthly delta from DDB snapshots and
+        emits a `MonthlyEstimatedSavingsUsd` metric...
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What other approaches did you think about? Why is yours the best fit?
+    validations:
+      required: false
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact on existing invariants
+      description: |
+        Does this break any of the framework's design invariants?
+        (Encryption at rest, off-by-default destruction, standalone-reusable
+        modules, no hardcoded rate tables, no silent failure.) Be honest —
+        intentionally breaking an invariant is OK if the rationale is
+        documented.
+      placeholder: |
+        This proposal would require maintaining a regional rate table,
+        which violates the "dollar reporting belongs in the analytics
+        layer" principle. Alternative: emit only resource-time-stopped
+        as a metric, let the analytics layer multiply by rates.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: contribute
+    attributes:
+      label: Are you offering to implement this?
+      options:
+        - "Yes — I'll send a PR"
+        - "Maybe — depends on feedback"
+        - "No — just requesting"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: I have searched existing issues + Discussions for similar proposals.
+          required: true
+        - label: I have read the architectural invariants in CONTRIBUTING.md and considered whether this proposal preserves them.
+          required: true

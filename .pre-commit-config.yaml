@@ -1,0 +1,136 @@
+# Pre-commit hooks for Solidus FinOps
+#
+# Local guardrails that catch the same issues CI catches, but on your
+# laptop before you push. Install once:
+#
+#   pip install pre-commit
+#   pre-commit install
+#
+# Run manually:
+#   pre-commit run --all-files
+#
+# Skip a single hook for an emergency commit:
+#   SKIP=tflint git commit -m "..."
+#
+# Do not skip hooks routinely — the CI runs the same checks.
+
+repos:
+  # ---------------------------------------------------------------------------
+  # Generic hygiene
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: \.md$       # markdown can use trailing spaces for line breaks
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=512]  # bumps to 1024 only for diagrams/*.png
+        exclude: ^diagrams/.+\.(png|svg)$
+      - id: check-case-conflict
+      - id: check-symlinks
+      - id: detect-private-key
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  # ---------------------------------------------------------------------------
+  # Terraform — fmt + validate + tflint
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.96.1
+    hooks:
+      - id: terraform_fmt
+      - id: terraform_validate
+        args:
+          - --hook-config=--retry-once-with-cleanup=true
+          - --tf-init-args=-backend=false
+      - id: terraform_tflint
+        args:
+          - --args=--config=__GIT_WORKING_DIR__/.tflint.hcl
+          - --args=--format=compact
+      - id: terraform_docs
+        # Auto-update the variables/outputs tables in each module's README.
+        # Wraps generated content in <!-- BEGIN_TF_DOCS --> markers.
+        args:
+          - --hook-config=--path-to-file=README.md
+          - --hook-config=--add-to-existing-file=true
+          - --hook-config=--create-file-if-not-exist=false
+
+  # ---------------------------------------------------------------------------
+  # Python — Lambda source syntax check
+  # ---------------------------------------------------------------------------
+  - repo: local
+    hooks:
+      - id: python-syntax
+        name: python AST parse for every Lambda source
+        entry: python3 -c "import ast, sys; [ast.parse(open(p).read()) for p in sys.argv[1:]]"
+        language: system
+        files: ^modules/.+/lambda/.+\.py$
+
+  # ---------------------------------------------------------------------------
+  # Shell scripts
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/koalaman/shellcheck-precommit
+    rev: v0.10.0
+    hooks:
+      - id: shellcheck
+        args: [--severity=warning]
+
+  # ---------------------------------------------------------------------------
+  # Custom — verify per-module CHANGELOG.md updated when the module changes
+  # ---------------------------------------------------------------------------
+  - repo: local
+    hooks:
+      - id: module-changelog-touched
+        name: check that per-module CHANGELOG.md is touched when module source changes
+        entry: |
+          bash -c '
+            set -e
+            staged_modules=$(git diff --cached --name-only --diff-filter=ACMRT \
+              | grep -oE "modules/[^/]+" | sort -u || true)
+            missing=""
+            for m in $staged_modules; do
+              if [ -f "$m/CHANGELOG.md" ]; then
+                if ! git diff --cached --name-only | grep -q "^$m/CHANGELOG.md$"; then
+                  missing="$missing $m"
+                fi
+              fi
+            done
+            if [ -n "$missing" ]; then
+              echo "Module(s) changed without updating their CHANGELOG.md:$missing"
+              echo "Add a [Unreleased] entry (or new version) per Keep a Changelog format."
+              exit 1
+            fi
+          '
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+
+  # ---------------------------------------------------------------------------
+  # Custom — block accidental stale-variable references (legacy names removed in v0.1.0)
+  # ---------------------------------------------------------------------------
+  - repo: local
+    hooks:
+      - id: no-legacy-variable-names
+        name: block re-introduction of pre-v0.1.0 variable names
+        entry: |
+          bash -c '
+            set -e
+            patterns="enable_anomaly_detection|enable_compute_optimizer|enable_cost_optimization_hub|enable_savings_coverage_reporter|^required_tags |^cost_categories |^budget_currency |^budget_default_thresholds |^enable_focus_export |^enable_cost_data_exports |^enable_athena_workgroup |^enable_tag_governance |^enable_idle_cleanup |^enable_instance_scheduler |^enable_finops_metrics |^enable_budget_performance_tracking |^notification_emails |^slack_webhook_url |^teams_webhook_url "
+            offending=$(git diff --cached -U0 | grep -E "^\+" | grep -vE "^\+\+\+" | grep -E "$patterns" || true)
+            if [ -n "$offending" ]; then
+              echo "Found references to legacy variable names removed in v0.1.0:"
+              echo "$offending"
+              echo
+              echo "See README.md '\''Variable naming convention'\'' — every submodule"
+              echo "variable is prefixed <module>_<name>; booleans use <module>_enabled."
+              exit 1
+            fi
+          '
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]

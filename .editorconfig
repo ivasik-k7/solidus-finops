@@ -1,0 +1,60 @@
+# EditorConfig — https://editorconfig.org/
+#
+# Solidus FinOps editor settings. Most editors (VS Code, JetBrains,
+# Sublime, Vim with vim-editorconfig) pick this up automatically.
+# Keeps formatting consistent across contributors regardless of editor
+# preference.
+
+root = true
+
+# ---------------------------------------------------------------------------
+# Defaults for every file in the repo
+# ---------------------------------------------------------------------------
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 2
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# ---------------------------------------------------------------------------
+# Terraform — matches `terraform fmt` output
+# ---------------------------------------------------------------------------
+[*.tf]
+indent_size = 2
+
+[*.tfvars]
+indent_size = 2
+
+# ---------------------------------------------------------------------------
+# Python — PEP 8: 4-space indent
+# ---------------------------------------------------------------------------
+[*.py]
+indent_size = 4
+max_line_length = 100
+
+# ---------------------------------------------------------------------------
+# YAML — 2-space indent (GitHub Actions, dependabot, issue templates)
+# ---------------------------------------------------------------------------
+[*.{yml,yaml}]
+indent_size = 2
+
+# ---------------------------------------------------------------------------
+# Shell — 4-space indent (idiomatic; matches Google shell style guide)
+# ---------------------------------------------------------------------------
+[*.sh]
+indent_size = 4
+
+# ---------------------------------------------------------------------------
+# Markdown — preserve trailing whitespace on lines (significant in some
+# Markdown dialects for hard line breaks). Disable trim explicitly.
+# ---------------------------------------------------------------------------
+[*.md]
+trim_trailing_whitespace = false
+
+# ---------------------------------------------------------------------------
+# Makefiles — tabs are required by Make itself
+# ---------------------------------------------------------------------------
+[Makefile]
+indent_style = tab
