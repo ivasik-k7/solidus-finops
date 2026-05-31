@@ -1,0 +1,100 @@
+# =============================================================================
+# .lychee.toml - Configuration for lychee link checker
+# =============================================================================
+#
+# WHAT THIS IS
+# ------------
+# This file configures `lychee` (https://github.com/lycheeverse/lychee), the
+# link-checker used in CI (.github/workflows/docs-quality.yml). Lychee crawls
+# every Markdown (*.md) file in this repository and verifies that hyperlinks,
+# image references, and bare URLs resolve. The goal is to catch real breakage
+# (typos, removed pages, dead anchors) without failing CI on transient noise.
+#
+# WHY THE EXCLUSIONS
+# ------------------
+# Real-world documentation links rot in predictable ways. Rather than chase a
+# perfectly green run, we exclude links that are flaky-but-known-valid so the
+# checker stays useful. Each exclusion below has a concrete justification:
+#
+#   * AWS service-authorization reference pages
+#       AWS rotates / re-slugs these reference pages frequently. The page for
+#       `list_amazonec2` returns 404 today but the content is still published
+#       under a renamed URL. We link to it from the IAM / least-privilege
+#       sections of the runbook; excluding it avoids weekly CI flaps.
+#
+#   * http://localhost and http://127.0.0.1
+#       Used as illustrative example URLs in operator-facing docs (port-forward
+#       walkthroughs, local-dev quick-starts). They are never reachable from
+#       a GitHub-hosted runner and should not be probed.
+#
+#   * mailto: links
+#       Contact addresses (e.g. ivan.kovtun@dataart.com) appear as bare strings
+#       in SECURITY.md and SUPPORT.md. Lychee's mailto verification depends on
+#       SMTP reachability from the runner, which is unreliable on GitHub
+#       Actions. These are validated by human review at PR time instead.
+#
+# Status codes 403 and 429 are accepted because several upstream sites
+# (Cloudflare-fronted vendor docs, GitHub raw content under rate limits) return
+# them to anonymous crawlers even when the URL is perfectly valid.
+#
+# HOW TO TEST LOCALLY
+# -------------------
+# Install lychee (`cargo install lychee` or `brew install lychee`) and run:
+#
+#     lychee --config .lychee.toml ./**/*.md
+#
+# Enable shell globstar first if your shell needs it (`shopt -s globstar` in
+# bash). For a focused check on a single file:
+#
+#     lychee --config .lychee.toml docs/OPERATIONAL_RUNBOOK.md
+#
+# =============================================================================
+
+# ---- Runtime behaviour ------------------------------------------------------
+
+# Cache successful + failed responses on disk so re-runs are fast.
+cache = true
+
+# Discard cached entries older than one day; balances speed vs. catching
+# newly-broken links within a reasonable window.
+max_cache_age = "1d"
+
+# Quiet output: CI logs already capture failures; verbose mode floods them.
+verbose = false
+
+# Disable the interactive progress bar (meaningless in CI logs).
+no_progress = true
+
+# Cap parallel requests. Higher values trip rate-limits on doc hosts (AWS,
+# GitHub, Terraform Registry) and produce false-positive 429s.
+max_concurrency = 4
+
+# Only scan Markdown files. Lychee will still follow links *to* other file
+# types, but it will not parse them looking for further links.
+extensions = ["md"]
+
+# HTTP status codes treated as "link is fine".
+#   200, 206       - OK / partial content
+#   301, 302,
+#   307, 308       - redirects (permanent and temporary)
+#   403            - forbidden to anonymous crawler but page exists
+#   429            - rate-limited; not a broken link
+accept = [200, 206, 301, 302, 307, 308, 403, 429]
+
+# ---- Exclusions -------------------------------------------------------------
+#
+# `exclude` is a list of regular expressions; any URL matching any pattern is
+# skipped entirely (not requested, not reported). Patterns are anchored loosely
+# so a substring match is sufficient.
+
+exclude = [
+    # AWS docs rotate slugs - this page 404s today but is historically valid.
+    'docs\.aws\.amazon\.com/service-authorization/reference/list_amazonec2\.html',
+
+    # Example URLs used in operator walkthroughs - never reachable from CI.
+    'http://localhost',
+    'http://127\.0\.0\.1',
+
+    # Contact addresses; SMTP probing from GitHub runners is unreliable.
+    'mailto:',
+]

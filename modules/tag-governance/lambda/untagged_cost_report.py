@@ -263,7 +263,8 @@ def _snake(name: str) -> str:
     out = [name[0].lower()]
     for ch in name[1:]:
         if ch.isupper():
-            out.append("_"); out.append(ch.lower())
+            out.append("_")
+            out.append(ch.lower())
         else:
             out.append(ch)
     return "".join(out)

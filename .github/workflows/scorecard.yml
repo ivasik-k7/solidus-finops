@@ -1,0 +1,111 @@
+# ---------------------------------------------------------------------------
+# scorecard.yml
+#
+# OpenSSF Scorecard supply-chain security analysis for Solidus FinOps.
+#
+# WHAT THIS DOES
+#   Runs the official ossf/scorecard-action against this repository to assess
+#   supply-chain security posture across ~18 heuristics (Branch-Protection,
+#   Pinned-Dependencies, Token-Permissions, Signed-Releases, SAST, SECURITY.md,
+#   Code-Review, Dangerous-Workflow, Dependency-Update-Tool, Fuzzing,
+#   License, Maintained, CII-Best-Practices, etc.) and uploads results to
+#   GitHub Code Scanning so findings surface in the Security tab.
+#
+# WHY THIS MATTERS FOR SOLIDUS FINOPS
+#   A high OpenSSF Scorecard rating is a credibility signal for FinOps
+#   stakeholders, platform/security teams, and procurement reviewers
+#   evaluating this Terraform framework for production AWS deployment.
+#   The framework already satisfies many heuristics (Apache-2.0 LICENSE,
+#   SECURITY.md, CODEOWNERS, Dependabot, pinned actions, soft_fail=false
+#   Checkov gate) and this workflow makes that posture visible and tracked.
+#
+# RESULT PUBLICATION
+#   publish_results: true sends the score to the public OpenSSF transparency
+#   log at https://scorecard.dev so a badge can be embedded in the README.
+#   This is an explicit opt-in to public transparency — only the score and
+#   per-heuristic findings are published, never repository contents.
+#
+# TRIGGERS
+#   - push to main         : score reflects current default-branch state
+#   - schedule (Mon 07:00) : weekly drift detection vs. upstream rule changes
+#   - workflow_dispatch    : on-demand re-run after a remediation PR merges
+#
+# ACTION VERSION PIN — DO NOT LOOSEN
+#   ossf/scorecard-action is pinned to the exact tag v2.4.0 rather than a
+#   floating major (v2) because the upstream repository does NOT publish a
+#   moving 'v2' tag — only fully-qualified semver tags (v2.4.0, v2.4.2, ...).
+#   GitHub Actions resolves `uses:` references by exact ref match (tag,
+#   branch, or SHA); with no 'v2' tag present the runner fails with
+#   "unable to find version v2" and the workflow never starts. v2.4.0 is
+#   the widely-adopted stable release that supports SARIF output and the
+#   publish_results transparency-log integration used below. Future bumps
+#   should move to another explicit semver tag (e.g. v2.4.2) or a pinned
+#   commit SHA — never to a bare major like 'v2'.
+# ---------------------------------------------------------------------------
+
+name: OpenSSF Scorecard
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    # Weekly Monday 07:00 UTC — runs after the weekend, before EU/US working hours.
+    - cron: '0 7 * * 1'
+  workflow_dispatch:
+
+# Default to least privilege; the analysis job elevates only what it needs.
+permissions:
+  contents: read
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      # Required to upload SARIF results to GitHub Code Scanning.
+      security-events: write
+      # Required for the scorecard-action to read repository metadata
+      # (branch protection rules, webhooks, workflow runs).
+      actions: read
+      # Default read access to repository contents.
+      contents: read
+      # Required for keyless signing / OIDC token exchange when publishing
+      # results to the OpenSSF transparency log (scorecard.dev).
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Scorecard does not need write credentials; dropping them prevents
+          # any downstream step from accidentally pushing to the repo.
+          persist-credentials: false
+
+      - name: Run OpenSSF Scorecard analysis
+        # Pinned to v2.4.0 — see ACTION VERSION PIN note at top of file.
+        # Upstream does not ship a 'v2' floating tag, so a bare major fails
+        # to resolve at runtime with "unable to find version v2".
+        uses: ossf/scorecard-action@v2.4.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # Publish to https://scorecard.dev transparency log so the score
+          # is visible to evaluators and a badge can be added to README.md.
+          # Only the score + heuristic outcomes are published, not repo data.
+          publish_results: true
+
+      - name: Upload SARIF as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SARIF file
+          path: results.sarif
+          retention-days: 5
+          if-no-files-found: error
+
+      - name: Upload SARIF to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif

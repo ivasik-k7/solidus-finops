@@ -138,8 +138,9 @@ def _crawler_age_hours() -> dict[str, Any]:
     state = crawler.get("State", "UNKNOWN")
     last = crawler.get("LastCrawl", {}) or {}
     status = last.get("Status")
-    last_end_str = last.get("LogStream") and None  # placeholder; CompletedOn is more useful
-    completed_on = last.get("StartTime")  # Glue uses StartTime in LastCrawl
+    # Glue's LastCrawl exposes StartTime; CompletedOn is not part of the
+    # response shape, so we use StartTime as a "last attempt" age signal.
+    completed_on = last.get("StartTime")
     age_hours = None
     if completed_on:
         age_hours = round((_now() - completed_on.replace(tzinfo=dt.timezone.utc)).total_seconds() / 3600.0, 2)

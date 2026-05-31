@@ -1,0 +1,152 @@
+# =============================================================================
+# Solidus FinOps - Security Workflow
+# =============================================================================
+# Purpose:
+#   Supply-chain and secrets scanning for the Solidus FinOps Terraform
+#   framework. This workflow protects the framework's consumers (AWS FinOps
+#   practitioners who deploy this code into production accounts) from three
+#   classes of risk:
+#     1. Vulnerable dependencies / misconfigured IaC (Trivy filesystem scan)
+#     2. Leaked secrets in source or git history (Gitleaks)
+#     3. Code-level security weaknesses in the Lambda Python sources
+#        (CodeQL static analysis of modules/<name>/lambda/*.py)
+#
+# Why three separate jobs:
+#   Each scanner has a distinct failure mode and remediation owner. Splitting
+#   them lets PR authors see exactly which control failed, and lets the
+#   security team triage SARIF findings in GitHub code-scanning without
+#   waiting on unrelated scans.
+#
+# Triggers:
+#   - pull_request: gate every change before merge
+#   - push to main: catch anything that slipped through (e.g. admin merges)
+#   - schedule (Mon 09:00 UTC): catch newly-disclosed CVEs in pinned deps
+#
+# Notes:
+#   - GITLEAKS_LICENSE is free for public OSS repos and not required here.
+#     If this framework is ever mirrored into a private org repo, set the
+#     org-level GITLEAKS_LICENSE secret; the step below already wires it.
+#   - Trivy uses ignore-unfixed:true so we don't block PRs on CVEs with no
+#     upstream patch available. We still surface them via SARIF upload.
+#   - CodeQL build-mode is 'none' because Python is interpreted; there is
+#     nothing to compile in modules/*/lambda/*.py.
+# =============================================================================
+
+name: security
+
+on:
+  pull_request:
+    paths:
+      - "**/*.tf"
+      - "**/*.py"
+      - "**/requirements*.txt"
+      - ".github/workflows/security.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "**/*.tf"
+      - "**/*.py"
+      - "**/requirements*.txt"
+      - ".github/workflows/security.yml"
+  schedule:
+    # Monday 09:00 UTC - catch newly-disclosed CVEs each week
+    - cron: "0 9 * * 1"
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Trivy: filesystem scan for IaC misconfig + vulnerable dependencies.
+  # Scope is the whole repo so it picks up Terraform under modules/, Lambda
+  # Python sources, and the diagrams/ directory.
+  # ---------------------------------------------------------------------------
+  trivy:
+    name: trivy-fs-scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          severity: "CRITICAL,HIGH"
+          exit-code: "1"
+          ignore-unfixed: true
+          format: "sarif"
+          output: "trivy-results.sarif"
+
+      - name: Upload Trivy SARIF to GitHub code-scanning
+        # Always upload, even on Trivy failure, so findings show up in the
+        # Security tab for triage instead of being lost with the failed run.
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: "trivy-results.sarif"
+          category: "trivy-fs"
+
+  # ---------------------------------------------------------------------------
+  # Gitleaks: secret scanning across full git history.
+  # fetch-depth: 0 is required so gitleaks can walk every commit, not just
+  # the PR head. The action posts a PR comment naming the offending commit
+  # when GITHUB_TOKEN is provided.
+  # ---------------------------------------------------------------------------
+  gitleaks:
+    name: gitleaks-secret-scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITLEAKS_LICENSE is free for public OSS repos (this one is
+          # Apache-2.0). Required only when running under a GitHub
+          # organization account; set the org-level secret in that case.
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+          GITLEAKS_ENABLE_COMMENTS: "true"
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "true"
+          GITLEAKS_ENABLE_SUMMARY: "true"
+
+  # ---------------------------------------------------------------------------
+  # CodeQL: static analysis of the Lambda Python sources under
+  # modules/<name>/lambda/*.py. Python 3.12 runtime; no build step needed.
+  # ---------------------------------------------------------------------------
+  codeql:
+    name: codeql-python
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ["python"]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: "none"
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

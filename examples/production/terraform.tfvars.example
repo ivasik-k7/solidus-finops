@@ -1,0 +1,53 @@
+# =============================================================================
+# examples/production — terraform.tfvars.example
+#
+# Copy this file to terraform.tfvars and fill in your account-specific values.
+# NEVER commit terraform.tfvars to git — it carries webhook URLs that grant
+# anyone with the URL the ability to post into your Slack / Teams space.
+#
+# Alternatively, set these as Terraform Cloud / Terraform Enterprise
+# workspace variables marked **sensitive**:
+#
+#   slack_webhook_url   = "https://hooks.slack.com/services/..."   (sensitive)
+#   teams_webhook_url   = "https://yourorg.webhook.office.com/..." (sensitive)
+#
+# Or as environment variables (no file at all):
+#
+#   export TF_VAR_slack_webhook_url="..."
+#   export TF_VAR_teams_webhook_url="..."
+# =============================================================================
+
+# --- Slack ------------------------------------------------------------------
+# Get the incoming webhook URL from the Slack app config:
+#   slack.com → Your Apps → (your app) → Features → Incoming Webhooks
+#
+# Format: https://hooks.slack.com/services/T<workspace>/B<channel>/<secret>
+#
+# Set to null (or leave commented) to disable the Slack channel.
+slack_webhook_url = "https://hooks.slack.com/services/REPLACE/WITH/YOUR-WEBHOOK"
+
+# --- Microsoft Teams --------------------------------------------------------
+# Get the incoming webhook URL from the Teams channel:
+#   Channel → ... menu → Connectors → Incoming Webhook → Configure
+#
+# Format: https://<tenant>.webhook.office.com/webhookb2/<guid>@<guid>/IncomingWebhook/<guid>/<guid>
+#
+# Set to null (or leave commented) to disable the Teams channel.
+teams_webhook_url = "https://REPLACE.webhook.office.com/webhookb2/REPLACE"
+
+# =============================================================================
+# Notes
+# -----
+# - The framework's dispatcher Lambda fetches these from Secrets Manager at
+#   runtime; the values you set here land in Secrets Manager via Terraform,
+#   not in the Lambda env vars. Rotating a webhook is a Secrets-Manager
+#   PutSecretValue call — no Lambda re-deploy needed.
+#
+# - If you prefer to manage the webhooks outside Terraform (e.g., via a
+#   separate secrets pipeline), pass the secret ARN instead via the
+#   alerting_channels variable in main.tf. See modules/alerting/README.md for
+#   the polymorphic channel schema with min_severity routing.
+#
+# - For PagerDuty / Opsgenie / generic webhooks, use the polymorphic
+#   alerting_channels variable (not the legacy single-webhook inputs).
+# =============================================================================

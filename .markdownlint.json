@@ -1,0 +1,25 @@
+{
+  "_comment": "markdownlint-cli2 config for finops-framework-demo. Tuned for our real-world docs: CHANGELOG.md (Keep-a-Changelog repeats ### Added/Changed/Fixed per release -> MD024 siblings allowed); docs/finops-{en,uk}.md use multiple H1 anchors 'Part 1..4' and 'Appendix A/B' -> MD025 off; footers cite bare URLs like 'aws.amazon.com/kms/pricing' -> MD034 off; pseudo-header emphasis inside list items is stylistic -> MD036 off; mixed/empty code fences (AWS console output) -> MD040 off; long prose lines -> MD013 off; partial include files -> MD041 off; literal <key> placeholders -> MD033 off; per-file consistency for bullet style (- and + both appear) -> MD004 'consistent'; lenient ordered-list prefixes -> MD029 'one_or_ordered'. Kept enabled: MD022, MD031, MD032, MD009, MD012 (these catch real authoring bugs). Unknown top-level keys like _comment are ignored by markdownlint.",
+  "default": true,
+  "MD004": {
+    "style": "consistent"
+  },
+  "MD009": true,
+  "MD012": true,
+  "MD013": false,
+  "MD022": true,
+  "MD024": {
+    "siblings_only": true
+  },
+  "MD025": false,
+  "MD029": {
+    "style": "one_or_ordered"
+  },
+  "MD031": true,
+  "MD032": true,
+  "MD033": false,
+  "MD034": false,
+  "MD036": false,
+  "MD040": false,
+  "MD041": false
+}

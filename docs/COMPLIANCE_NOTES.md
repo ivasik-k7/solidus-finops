@@ -275,8 +275,11 @@ resource-level permissions. Specifically:
   `elasticloadbalancing:DeleteLoadBalancer`
 
 These actions require `Resource = "*"`. See the
-[AWS Service Authorization Reference for EC2](https://docs.aws.amazon.com/service-authorization/reference/list_amazonec2.html)
-and the corresponding pages for RDS, ASG, and ELB.
+[AWS Service Authorization Reference](https://docs.aws.amazon.com/service-authorization/latest/reference/reference_policies_actions-resources-contextkeys.html)
+(landing page; navigate to "Actions, resources, and condition keys for
+Amazon EC2 / RDS / Auto Scaling / Elastic Load Balancing"). AWS rotates
+the per-service slugs periodically; the landing page is the stable
+entry point.
 
 **Mitigation:** scope is enforced inside the Lambda runtime instead of
 in IAM:

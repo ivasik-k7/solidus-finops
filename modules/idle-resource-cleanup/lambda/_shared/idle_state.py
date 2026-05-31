@@ -40,7 +40,6 @@ from decimal import Decimal
 from typing import Any
 
 import boto3
-from boto3.dynamodb.conditions import Key
 
 TABLE_NAME = os.environ["FINDINGS_TABLE_NAME"]
 AGING_SEEN_COUNT_THRESHOLD = int(os.environ.get("AGING_SEEN_COUNT_THRESHOLD", "10"))
@@ -241,12 +240,12 @@ def record_action(
 
 
 def sum_savings_mtd(resource_type: str | None = None) -> float:
-    """Sum EstimatedSavingsUsd across ACTION rows in the current month."""
-    month_prefix = _now().strftime("ACTION#%Y-%m")
-    total = 0.0
-    # We scan via the GSI on Status — but ACTION rows don't carry Status, so
-    # we fall back to per-PK queries. This is a best-effort summary; for
-    # heavy use, denormalize into a monthly aggregate row.
-    # Implementation note: callers typically pass a precomputed total
-    # collected during their scan instead of calling this.
-    return total
+    """Sum EstimatedSavingsUsd across ACTION rows in the current month.
+
+    Best-effort summary. ACTION rows don't carry Status, so the GSI can't
+    serve this query directly — callers typically pass a precomputed total
+    collected during their scan instead of calling this. For heavy use,
+    denormalise into a monthly aggregate row.
+    """
+    # Reserved for a future GSI on Month — see EDGE_CASES.md.
+    return 0.0

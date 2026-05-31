@@ -1,15 +1,42 @@
-name: terraform-ci
+# ---------------------------------------------------------------------------
+# terraform-ci.yml
+#
+# Gold-standard Terraform CI for Solidus FinOps — a multi-module AWS FinOps
+# framework with curated examples (minimal / selective / production /
+# cloudability-complement).
+#
+# What this workflow does
+# -----------------------
+#   1. fmt       — enforces canonical formatting across every .tf file
+#   2. tflint    — lints with the repo-root .tflint.hcl ruleset
+#   3. validate  — runs `terraform init -backend=false && terraform validate`
+#                  on the root module AND every example, in a fail-fast: false
+#                  matrix so contributors see every broken path in one run
+#   4. checkov   — hard-fails on new security findings (soft_fail: false);
+#                  framework-wide skips are documented in
+#                  docs/COMPLIANCE_NOTES.md
+#   5. summary   — posts a markdown pass/fail table for the validate matrix
+#                  to the GitHub Actions job summary so reviewers can see
+#                  which example regressed at a glance
+#
+# Why it's shaped this way
+# ------------------------
+# * The framework ships 7 modules under modules/<name>/ plus 4 examples.
+#   A change to a shared variable or local can silently break a single
+#   example. The matrix validate step is the cheapest insurance against
+#   that — Terraform's plugin-cache makes the marginal cost ~5 seconds
+#   per path.
+# * Concurrency cancels superseded runs on the same ref so a fast push
+#   train doesn't queue stale jobs.
+# * paths: filter keeps docs-only PRs out of the Terraform gate; the
+#   filter intentionally covers .py because lambda/<name>.py is packaged
+#   into the modules and a syntax error there would surface at apply.
+# * Every action is pinned to a major version; `permissions:` is scoped
+#   to the minimum (contents: read, plus pull-requests: write so the
+#   Checkov action can annotate the diff).
+# ---------------------------------------------------------------------------
 
-# Hard-enforced static-analysis gates for Solidus FinOps.
-#
-# As of v0.2.1 the framework is 100% clean against every active job below.
-# No advisory checks remain — Checkov runs with `soft_fail: false`, so a PR
-# that introduces a new unsuppressed finding fails the build and cannot
-# merge.
-#
-# New findings must be either fixed in code OR suppressed with an inline
-# `# checkov:skip=<rule>:<reason>` comment AND a matching subsection in
-# docs/COMPLIANCE_NOTES.md "Documented Checkov suppressions".
+name: terraform-ci
 
 on:
   pull_request:
@@ -28,61 +55,168 @@ on:
       - ".github/workflows/terraform-ci.yml"
       - ".tflint.hcl"
 
+# Cancel superseded runs on the same ref. The PR head ref and the push
+# ref share the same concurrency group, so the latest commit always wins.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   pull-requests: write
 
+env:
+  TF_VERSION: "1.6.6"
+  TF_PLUGIN_CACHE_DIR: "/home/runner/.terraform.d/plugin-cache"
+
 jobs:
+  # -------------------------------------------------------------------------
+  # fmt — canonical formatting across the entire tree
+  # -------------------------------------------------------------------------
   fmt:
     name: terraform fmt
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.6.6
-      - run: terraform fmt -check -recursive
+          terraform_version: ${{ env.TF_VERSION }}
 
-  # validate:
-  #   name: terraform validate
-  #   runs-on: ubuntu-latest
-  #   strategy:
-  #     fail-fast: false
-  #     matrix:
-  #       path:
-  #         - "."
-  #         - "examples/minimal"
-  #         - "examples/selective"
-  #         - "examples/production"
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: hashicorp/setup-terraform@v3
-  #       with:
-  #         terraform_version: 1.6.6
-  #     - name: terraform init (no backend)
-  #       working-directory: ${{ matrix.path }}
-  #       run: terraform init -backend=false
-  #     - name: terraform validate
-  #       working-directory: ${{ matrix.path }}
-  #       run: terraform validate
+      - name: terraform fmt -check -recursive
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform fmt -check -recursive
 
+  # -------------------------------------------------------------------------
+  # validate — matrix init+validate over root + every example
+  # -------------------------------------------------------------------------
+  validate:
+    name: validate (${{ matrix.path }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        path:
+          - "."
+          - "examples/minimal"
+          - "examples/selective"
+          - "examples/production"
+          - "examples/cloudability-complement"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Prepare provider plugin cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${TF_PLUGIN_CACHE_DIR}"
+
+      - name: Cache Terraform provider plugins
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          # Key on every .terraform.lock.hcl in the repo so a provider
+          # bump invalidates the cache automatically.
+          key: ${{ runner.os }}-tf-plugins-${{ hashFiles('**/.terraform.lock.hcl') }}
+          restore-keys: |
+            ${{ runner.os }}-tf-plugins-
+
+      - name: terraform init (no backend)
+        working-directory: ${{ matrix.path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform init -backend=false -input=false -no-color
+
+      - name: terraform validate
+        id: tf_validate
+        working-directory: ${{ matrix.path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform validate -no-color
+
+      # Emit a per-matrix-leg artifact that the `summary` job aggregates
+      # into a markdown table. We sanitize the path for the artifact name
+      # because "." and "/" are not valid in artifact names.
+      - name: Record matrix result
+        if: always()
+        shell: bash
+        env:
+          MATRIX_PATH: ${{ matrix.path }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/validate-results"
+          safe_name="$(printf '%s' "${MATRIX_PATH}" | tr '/.' '__')"
+          if [[ -z "${safe_name}" || "${safe_name}" == "_" ]]; then
+            safe_name="root"
+          fi
+          printf '%s\t%s\n' "${MATRIX_PATH}" "${JOB_STATUS}" \
+            > "${RUNNER_TEMP}/validate-results/${safe_name}.tsv"
+
+      - name: Upload matrix result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validate-result-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/validate-results/
+          retention-days: 1
+          if-no-files-found: error
+
+  # -------------------------------------------------------------------------
+  # tflint — repo-root .tflint.hcl, recursive over modules + examples
+  # -------------------------------------------------------------------------
   tflint:
     name: tflint
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: terraform-linters/setup-tflint@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup tflint
+        uses: terraform-linters/setup-tflint@v4
         with:
           tflint_version: latest
-      - run: tflint --init
-      - run: tflint --recursive --format compact
 
+      - name: tflint --init
+        shell: bash
+        run: |
+          set -euo pipefail
+          tflint --init
+
+      - name: tflint --recursive
+        shell: bash
+        run: |
+          set -euo pipefail
+          tflint --recursive --format compact
+
+  # -------------------------------------------------------------------------
+  # checkov — security baseline; hard-fails on new findings
+  # -------------------------------------------------------------------------
   checkov:
     name: checkov
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: bridgecrewio/checkov-action@master
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@master
         with:
           directory: .
           framework: terraform
@@ -98,3 +232,75 @@ jobs:
           #   CKV_AWS_117: Lambdas in a VPC is a roadmap item; the framework
           #                Lambdas don't need VPC access (they call AWS APIs only)
           skip_check: CKV_AWS_111,CKV2_AWS_5,CKV_AWS_117
+
+  # -------------------------------------------------------------------------
+  # summary — aggregate the validate matrix into a markdown table on
+  # GITHUB_STEP_SUMMARY. Runs even when validate legs fail so reviewers
+  # see the full matrix outcome in one place.
+  # -------------------------------------------------------------------------
+  summary:
+    name: validate summary
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: validate
+    if: always()
+    steps:
+      - name: Download matrix results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: validate-result-*
+          path: validate-results
+          merge-multiple: true
+
+      - name: Render markdown summary
+        shell: bash
+        env:
+          VALIDATE_NEEDS_RESULT: ${{ needs.validate.result }}
+        run: |
+          set -euo pipefail
+
+          results_dir="validate-results"
+          {
+            echo "## Terraform validate matrix"
+            echo ""
+            echo "| Path | Result |"
+            echo "| --- | --- |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if [[ ! -d "${results_dir}" ]] || ! compgen -G "${results_dir}/*.tsv" > /dev/null; then
+            echo "| _(no results found)_ | :warning: |" >> "${GITHUB_STEP_SUMMARY}"
+            echo "Aggregate validate result: ${VALIDATE_NEEDS_RESULT}" >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
+          # Sort so "." (root) sorts before examples/* deterministically.
+          while IFS=$'\t' read -r path_value status_value; do
+            case "${status_value}" in
+              success)   icon=":white_check_mark: pass" ;;
+              failure)   icon=":x: fail" ;;
+              cancelled) icon=":no_entry: cancelled" ;;
+              skipped)   icon=":fast_forward: skipped" ;;
+              *)         icon=":grey_question: ${status_value}" ;;
+            esac
+            printf '| `%s` | %s |\n' "${path_value}" "${icon}" \
+              >> "${GITHUB_STEP_SUMMARY}"
+          done < <(cat "${results_dir}"/*.tsv | sort)
+
+          {
+            echo ""
+            echo "Aggregate validate result: \`${VALIDATE_NEEDS_RESULT}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      # Mirror the aggregate validate outcome so this job's status reflects
+      # whether the matrix passed. Without this the summary job would
+      # always be green, masking a failed leg in branch protection.
+      - name: Reflect aggregate validate result
+        shell: bash
+        env:
+          VALIDATE_NEEDS_RESULT: ${{ needs.validate.result }}
+        run: |
+          set -euo pipefail
+          if [[ "${VALIDATE_NEEDS_RESULT}" != "success" ]]; then
+            echo "validate matrix did not succeed: ${VALIDATE_NEEDS_RESULT}" >&2
+            exit 1
+          fi

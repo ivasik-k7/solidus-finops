@@ -1,0 +1,94 @@
+name: python-ci
+
+# Lambda Python source quality gate for Solidus FinOps.
+#
+# Every module under modules/<name>/lambda/ ships Python 3.12 code that runs
+# inside AWS Lambda. Some modules nest sources by sub-handler
+# (e.g. modules/idle-resource-cleanup/lambda/ebs/ebs_cleanup.py), so all checks
+# walk modules/ recursively rather than hard-coding paths.
+#
+# Why each step exists:
+#   ruff check        - lint (pyflakes + pycodestyle + import sorting, fast)
+#   ruff format       - enforce the same formatter every contributor uses
+#   compileall        - byte-compile every .py; catches SyntaxError before a
+#                       Lambda cold-start does, including files that aren't
+#                       imported by any test
+#   mypy (advisory)   - boto3-stubs is best-effort and AWS API surface drifts;
+#                       run continue-on-error so type warnings inform reviewers
+#                       without blocking merges
+#
+# Matrix covers both Lambda-supported runtimes (3.11 LTS + 3.12 default) so a
+# change that accidentally relies on 3.12-only syntax fails fast on 3.11.
+
+on:
+  pull_request:
+    paths:
+      - "modules/**/*.py"
+      - ".github/workflows/python-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "modules/**/*.py"
+      - ".github/workflows/python-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: python-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint-and-typecheck:
+    name: ruff + compile + mypy (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: Install tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install \
+            "ruff" \
+            "mypy" \
+            "boto3" \
+            "boto3-stubs[essential]"
+
+      - name: ruff check (lint)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruff check modules/
+
+      - name: ruff format --check (formatter compliance)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruff format --check modules/
+
+      - name: compileall (syntax + bytecode)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q modules/
+
+      - name: mypy (advisory, boto3 stubs are best-effort)
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          mypy --ignore-missing-imports modules/
