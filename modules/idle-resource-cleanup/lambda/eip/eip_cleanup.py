@@ -7,6 +7,7 @@ State tracking via idle_state (shared helper) dedups findings across runs,
 escalates aging entries, honors snooze/exception status, and writes an
 audit row for every release.
 """
+
 from __future__ import annotations
 
 import json
@@ -39,14 +40,16 @@ _ACTOR_ID = f"lambda:{os.environ.get('AWS_LAMBDA_FUNCTION_NAME', 'unknown')}"
 
 
 def handler(event, context):
-    logger.info("EIP idle scan: dry_run=%s regions=%s", DRY_RUN, SCAN_REGIONS or "[home]")
+    logger.info(
+        "EIP idle scan: dry_run=%s regions=%s", DRY_RUN, SCAN_REGIONS or "[home]"
+    )
 
     findings: list[dict] = []
     released: list[str] = []
     errors: list[dict] = []
     cumulative_savings = 0.0
 
-    for region in (SCAN_REGIONS or [None]):
+    for region in SCAN_REGIONS or [None]:
         ec2 = boto3.client("ec2", region_name=region, config=_boto)
         eff_region = region or ec2.meta.region_name
         try:
@@ -66,7 +69,13 @@ def handler(event, context):
                     cumulative_savings += EIP_MONTHLY_USD
             except Exception as e:
                 logger.exception("Failed to process EIP %s", addr.get("AllocationId"))
-                errors.append({"region": eff_region, "allocation_id": addr.get("AllocationId"), "error": str(e)})
+                errors.append(
+                    {
+                        "region": eff_region,
+                        "allocation_id": addr.get("AllocationId"),
+                        "error": str(e),
+                    }
+                )
 
     total_waste = round(sum(f["EstimatedMonthlyCostUsd"] for f in findings), 2)
     aging_count = sum(1 for f in findings if f.get("IsAging"))
@@ -135,8 +144,12 @@ def _process(ec2, region: str, addr: dict) -> dict:
 
     if state["IsNew"]:
         idle_state.record_action(
-            resource_type="EIP", resource_id=alloc_id or public_ip, region=region,
-            account_id=_ACCOUNT_ID, action_type="detected", actor_id=_ACTOR_ID,
+            resource_type="EIP",
+            resource_id=alloc_id or public_ip,
+            region=region,
+            account_id=_ACCOUNT_ID,
+            action_type="detected",
+            actor_id=_ACTOR_ID,
         )
 
     if DRY_RUN or not alloc_id:
@@ -144,8 +157,12 @@ def _process(ec2, region: str, addr: dict) -> dict:
 
     ec2.release_address(AllocationId=alloc_id)
     idle_state.record_action(
-        resource_type="EIP", resource_id=alloc_id, region=region,
-        account_id=_ACCOUNT_ID, action_type="released", actor_id=_ACTOR_ID,
+        resource_type="EIP",
+        resource_id=alloc_id,
+        region=region,
+        account_id=_ACCOUNT_ID,
+        action_type="released",
+        actor_id=_ACTOR_ID,
         estimated_savings_usd=EIP_MONTHLY_USD,
     )
     logger.info("Released %s in %s", alloc_id, region)
@@ -165,9 +182,29 @@ def _publish_metrics(waste, found, actions, savings):
     cw.put_metric_data(
         Namespace=METRIC_NAMESPACE,
         MetricData=[
-            {"MetricName": "MonthlyWasteUsd",   "Value": float(waste),   "Unit": "None",  "Dimensions": dim},
-            {"MetricName": "FoundCount",        "Value": float(found),   "Unit": "Count", "Dimensions": dim},
-            {"MetricName": "ActionsTakenCount", "Value": float(actions), "Unit": "Count", "Dimensions": dim},
-            {"MetricName": "RunSavingsUsd",     "Value": float(savings), "Unit": "None",  "Dimensions": dim},
+            {
+                "MetricName": "MonthlyWasteUsd",
+                "Value": float(waste),
+                "Unit": "None",
+                "Dimensions": dim,
+            },
+            {
+                "MetricName": "FoundCount",
+                "Value": float(found),
+                "Unit": "Count",
+                "Dimensions": dim,
+            },
+            {
+                "MetricName": "ActionsTakenCount",
+                "Value": float(actions),
+                "Unit": "Count",
+                "Dimensions": dim,
+            },
+            {
+                "MetricName": "RunSavingsUsd",
+                "Value": float(savings),
+                "Unit": "None",
+                "Dimensions": dim,
+            },
         ],
     )

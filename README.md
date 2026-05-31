@@ -1,5 +1,23 @@
 # Solidus FinOps
 
+<!-- markdownlint-disable MD033 MD041 -->
+<p align="left">
+  <a href="https://github.com/ivasik-k7/solidus-finops/actions/workflows/terraform-ci.yml"><img alt="terraform-ci" src="https://github.com/ivasik-k7/solidus-finops/actions/workflows/terraform-ci.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/ivasik-k7/solidus-finops/actions/workflows/python-ci.yml"><img alt="python-ci" src="https://github.com/ivasik-k7/solidus-finops/actions/workflows/python-ci.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/ivasik-k7/solidus-finops/actions/workflows/security.yml"><img alt="security" src="https://github.com/ivasik-k7/solidus-finops/actions/workflows/security.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/ivasik-k7/solidus-finops/actions/workflows/docs-quality.yml"><img alt="docs-quality" src="https://github.com/ivasik-k7/solidus-finops/actions/workflows/docs-quality.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/ivasik-k7/solidus-finops/actions/workflows/scorecard.yml"><img alt="OpenSSF Scorecard" src="https://github.com/ivasik-k7/solidus-finops/actions/workflows/scorecard.yml/badge.svg?branch=main"></a>
+  <br>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/ivasik-k7/solidus-finops"><img alt="OpenSSF Scorecard score" src="https://api.scorecard.dev/projects/github.com/ivasik-k7/solidus-finops/badge"></a>
+  <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg"></a>
+  <a href="CHANGELOG.md"><img alt="Version" src="https://img.shields.io/github/v/tag/ivasik-k7/solidus-finops?label=version&sort=semver"></a>
+  <a href="https://www.terraform.io/"><img alt="Terraform &ge; 1.6" src="https://img.shields.io/badge/Terraform-%E2%89%A5%201.6.0-7B42BC?logo=terraform"></a>
+  <a href="https://www.python.org/"><img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white"></a>
+  <a href="https://pre-commit.com/"><img alt="pre-commit enabled" src="https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit"></a>
+  <a href="https://www.conventionalcommits.org"><img alt="Conventional Commits" src="https://img.shields.io/badge/Conventional%20Commits-1.0.0-yellow.svg"></a>
+</p>
+<!-- markdownlint-enable MD033 MD041 -->
+
 **Solidus FinOps** is a production-grade Terraform framework that provisions a
 complete FinOps capability stack for AWS, aligned with the
 [FinOps Foundation Capabilities](https://www.finops.org/framework/capabilities/).

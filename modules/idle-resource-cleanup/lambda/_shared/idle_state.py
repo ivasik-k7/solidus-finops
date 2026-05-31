@@ -32,6 +32,7 @@ Lifecycle transitions managed by this helper:
   is_actionable()  — true unless Status in {"snoozed" (active), "excepted"}
   record_action()  — append ACTION row + update STATE.Status if terminal action
 """
+
 from __future__ import annotations
 
 import datetime as dt
@@ -40,7 +41,6 @@ from decimal import Decimal
 from typing import Any
 
 import boto3
-from boto3.dynamodb.conditions import Key
 
 TABLE_NAME = os.environ["FINDINGS_TABLE_NAME"]
 AGING_SEEN_COUNT_THRESHOLD = int(os.environ.get("AGING_SEEN_COUNT_THRESHOLD", "10"))
@@ -133,7 +133,10 @@ def upsert_state(
 
     if new_status == "new" and new_seen_count >= AGING_SEEN_COUNT_THRESHOLD:
         new_status = "aging"
-    elif new_status not in ("snoozed", "excepted", "deleted", "approved") and new_seen_count >= AGING_SEEN_COUNT_THRESHOLD:
+    elif (
+        new_status not in ("snoozed", "excepted", "deleted", "approved")
+        and new_seen_count >= AGING_SEEN_COUNT_THRESHOLD
+    ):
         new_status = "aging"
 
     item = {
@@ -177,7 +180,9 @@ def is_actionable(state: dict | None) -> bool:
     return True
 
 
-def mark_status(resource_type: str, resource_id: str, status: str, status_until: str | None = None) -> None:
+def mark_status(
+    resource_type: str, resource_id: str, status: str, status_until: str | None = None
+) -> None:
     """Update only the Status field of an existing STATE row."""
     expr = "SET #s = :s, LastSeenAt = :ls"
     vals: dict[str, Any] = {":s": status, ":ls": _now_iso()}
@@ -213,20 +218,24 @@ def record_action(
 ) -> None:
     """Append an ACTION row and, for terminal actions, update STATE.Status."""
     now_iso = _now_iso()
-    _table.put_item(Item=_to_decimal({
-        "PK": _pk(resource_type, resource_id),
-        "SK": f"ACTION#{now_iso}",
-        "ResourceType": resource_type,
-        "ResourceId": resource_id,
-        "Region": region,
-        "AccountId": account_id,
-        "ActionType": action_type,
-        "ActorId": actor_id,
-        "Timestamp": now_iso,
-        "EstimatedSavingsUsd": _to_decimal(float(estimated_savings_usd)),
-        "Notes": notes,
-        "ExpireAt": _epoch(ACTIONS_TTL_DAYS),
-    }))
+    _table.put_item(
+        Item=_to_decimal(
+            {
+                "PK": _pk(resource_type, resource_id),
+                "SK": f"ACTION#{now_iso}",
+                "ResourceType": resource_type,
+                "ResourceId": resource_id,
+                "Region": region,
+                "AccountId": account_id,
+                "ActionType": action_type,
+                "ActorId": actor_id,
+                "Timestamp": now_iso,
+                "EstimatedSavingsUsd": _to_decimal(float(estimated_savings_usd)),
+                "Notes": notes,
+                "ExpireAt": _epoch(ACTIONS_TTL_DAYS),
+            }
+        )
+    )
 
     if action_type in ("deleted", "released"):
         try:
@@ -241,12 +250,12 @@ def record_action(
 
 
 def sum_savings_mtd(resource_type: str | None = None) -> float:
-    """Sum EstimatedSavingsUsd across ACTION rows in the current month."""
-    month_prefix = _now().strftime("ACTION#%Y-%m")
-    total = 0.0
-    # We scan via the GSI on Status — but ACTION rows don't carry Status, so
-    # we fall back to per-PK queries. This is a best-effort summary; for
-    # heavy use, denormalize into a monthly aggregate row.
-    # Implementation note: callers typically pass a precomputed total
-    # collected during their scan instead of calling this.
-    return total
+    """Sum EstimatedSavingsUsd across ACTION rows in the current month.
+
+    Best-effort summary. ACTION rows don't carry Status, so the GSI can't
+    serve this query directly — callers typically pass a precomputed total
+    collected during their scan instead of calling this. For heavy use,
+    denormalise into a monthly aggregate row.
+    """
+    # Reserved for a future GSI on Month — see EDGE_CASES.md.
+    return 0.0

@@ -687,10 +687,18 @@ variable "budgets_items" {
     error_message = "Non-account budgets require a target."
   }
 
+  # NOTE: each per-scope validation uses try() to read the nested attribute,
+  # because Terraform's validation evaluator does NOT short-circuit `||`
+  # before resolving attribute access on a null parent. Without try(),
+  # `v.target.service` fails the entire validation for an "account"-scope
+  # budget where target is intentionally null. try() returns the fallback
+  # (false) on any access error, which the `v.scope != "X" ||` left-hand
+  # side then bypasses for non-matching scopes.
+
   validation {
     condition = alltrue([
       for k, v in var.budgets_items :
-      v.scope != "service" || (v.target != null && v.target.service != null)
+      v.scope != "service" || try(v.target.service != null, false)
     ])
     error_message = "Scope 'service' budgets require target.service."
   }
@@ -698,7 +706,7 @@ variable "budgets_items" {
   validation {
     condition = alltrue([
       for k, v in var.budgets_items :
-      v.scope != "tag" || (v.target != null && v.target.tag_key != null && v.target.tag_value != null)
+      v.scope != "tag" || try(v.target.tag_key != null && v.target.tag_value != null, false)
     ])
     error_message = "Scope 'tag' budgets require target.tag_key and target.tag_value."
   }
@@ -706,7 +714,7 @@ variable "budgets_items" {
   validation {
     condition = alltrue([
       for k, v in var.budgets_items :
-      v.scope != "cost_category" || (v.target != null && v.target.category_name != null && v.target.category_value != null)
+      v.scope != "cost_category" || try(v.target.category_name != null && v.target.category_value != null, false)
     ])
     error_message = "Scope 'cost_category' budgets require target.category_name and target.category_value."
   }

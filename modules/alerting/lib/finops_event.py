@@ -30,6 +30,7 @@ Usage (synchronous publish via boto3):
 Or use `format_message()` to get the JSON string and publish however you like
 (useful for tests + alternative transports).
 """
+
 from __future__ import annotations
 
 import json
@@ -51,7 +52,9 @@ def format_message(
 ) -> str:
     """Render the framework-canonical SNS message body as a JSON string."""
     if severity not in VALID_SEVERITIES:
-        raise ValueError(f"severity must be one of {VALID_SEVERITIES}, got {severity!r}")
+        raise ValueError(
+            f"severity must be one of {VALID_SEVERITIES}, got {severity!r}"
+        )
     body: dict[str, Any] = {
         "severity": severity,
         "AlertName": alert_name,

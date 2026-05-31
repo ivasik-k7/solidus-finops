@@ -2,6 +2,7 @@
 Idle NAT Gateway detector with multi-region scanning, CloudWatch-based
 utilization signal, and DDB-backed state lifecycle.
 """
+
 from __future__ import annotations
 
 import datetime as dt
@@ -39,8 +40,13 @@ _ACTOR_ID = f"lambda:{os.environ.get('AWS_LAMBDA_FUNCTION_NAME', 'unknown')}"
 
 
 def handler(event, context):
-    logger.info("NAT scan: dry_run=%s min_age=%sd lookback=%sd regions=%s",
-                DRY_RUN, MIN_AGE_DAYS, IDLE_LOOKBACK_DAYS, SCAN_REGIONS or "[home]")
+    logger.info(
+        "NAT scan: dry_run=%s min_age=%sd lookback=%sd regions=%s",
+        DRY_RUN,
+        MIN_AGE_DAYS,
+        IDLE_LOOKBACK_DAYS,
+        SCAN_REGIONS or "[home]",
+    )
 
     findings: list[dict] = []
     deleted: list[str] = []
@@ -49,7 +55,7 @@ def handler(event, context):
     cumulative_savings = 0.0
     ceiling_hit = False
 
-    for region in (SCAN_REGIONS or [None]):
+    for region in SCAN_REGIONS or [None]:
         ec2 = boto3.client("ec2", region_name=region, config=_boto)
         cw_regional = boto3.client("cloudwatch", region_name=region, config=_boto)
         eff_region = region or ec2.meta.region_name
@@ -60,18 +66,30 @@ def handler(event, context):
             ):
                 for nat in page["NatGateways"]:
                     try:
-                        outcome = _process(ec2, cw_regional, eff_region, nat, cumulative_usd)
+                        outcome = _process(
+                            ec2, cw_regional, eff_region, nat, cumulative_usd
+                        )
                         if outcome.get("ceiling_hit"):
                             ceiling_hit = True
                         if outcome.get("finding"):
                             findings.append(outcome["finding"])
-                            cumulative_usd += outcome["finding"]["EstimatedMonthlyCostUsd"]
+                            cumulative_usd += outcome["finding"][
+                                "EstimatedMonthlyCostUsd"
+                            ]
                         if outcome.get("deleted"):
                             deleted.append(outcome["deleted"])
                             cumulative_savings += NAT_MONTHLY_USD
                     except Exception as e:
-                        logger.exception("Failed processing NAT %s", nat.get("NatGatewayId"))
-                        errors.append({"region": eff_region, "nat_id": nat.get("NatGatewayId"), "error": str(e)})
+                        logger.exception(
+                            "Failed processing NAT %s", nat.get("NatGatewayId")
+                        )
+                        errors.append(
+                            {
+                                "region": eff_region,
+                                "nat_id": nat.get("NatGatewayId"),
+                                "error": str(e),
+                            }
+                        )
         except Exception as e:
             logger.exception("NAT list failed in %s", eff_region)
             errors.append({"region": eff_region, "phase": "list", "error": str(e)})
@@ -80,7 +98,9 @@ def handler(event, context):
     aging_count = sum(1 for f in findings if f.get("IsAging"))
     summary = {
         "AlertName": "Idle NAT Gateway scan",
-        "severity": "high" if (total > 64 or aging_count > 0) else ("medium" if findings else "low"),
+        "severity": "high"
+        if (total > 64 or aging_count > 0)
+        else ("medium" if findings else "low"),
         "DryRun": DRY_RUN,
         "MinAgeDays": MIN_AGE_DAYS,
         "IdleLookbackDays": IDLE_LOOKBACK_DAYS,
@@ -131,7 +151,11 @@ def _process(ec2, cw_regional, region: str, nat: dict, cumulative_usd: float) ->
         estimated_monthly_cost_usd=NAT_MONTHLY_USD,
         owner=owner,
         tags=tags,
-        resource_attrs={"VpcId": nat.get("VpcId"), "SubnetId": nat.get("SubnetId"), "AvgDailyBytesOut": round(avg_bytes, 2)},
+        resource_attrs={
+            "VpcId": nat.get("VpcId"),
+            "SubnetId": nat.get("SubnetId"),
+            "AvgDailyBytesOut": round(avg_bytes, 2),
+        },
     )
 
     if not idle_state.is_actionable(state):
@@ -155,8 +179,12 @@ def _process(ec2, cw_regional, region: str, nat: dict, cumulative_usd: float) ->
 
     if state["IsNew"]:
         idle_state.record_action(
-            resource_type="NATGateway", resource_id=nat_id, region=region,
-            account_id=_ACCOUNT_ID, action_type="detected", actor_id=_ACTOR_ID,
+            resource_type="NATGateway",
+            resource_id=nat_id,
+            region=region,
+            account_id=_ACCOUNT_ID,
+            action_type="detected",
+            actor_id=_ACTOR_ID,
             notes=f"AvgDailyBytesOut={round(avg_bytes, 2)}",
         )
 
@@ -166,15 +194,23 @@ def _process(ec2, cw_regional, region: str, nat: dict, cumulative_usd: float) ->
     if cumulative_usd + NAT_MONTHLY_USD > COST_CEILING_USD:
         logger.warning("Cost ceiling reached — skipping delete for %s", nat_id)
         idle_state.record_action(
-            resource_type="NATGateway", resource_id=nat_id, region=region,
-            account_id=_ACCOUNT_ID, action_type="skipped-ceiling", actor_id=_ACTOR_ID,
+            resource_type="NATGateway",
+            resource_id=nat_id,
+            region=region,
+            account_id=_ACCOUNT_ID,
+            action_type="skipped-ceiling",
+            actor_id=_ACTOR_ID,
         )
         return {"finding": finding, "ceiling_hit": True}
 
     ec2.delete_nat_gateway(NatGatewayId=nat_id)
     idle_state.record_action(
-        resource_type="NATGateway", resource_id=nat_id, region=region,
-        account_id=_ACCOUNT_ID, action_type="deleted", actor_id=_ACTOR_ID,
+        resource_type="NATGateway",
+        resource_id=nat_id,
+        region=region,
+        account_id=_ACCOUNT_ID,
+        action_type="deleted",
+        actor_id=_ACTOR_ID,
         estimated_savings_usd=NAT_MONTHLY_USD,
     )
     logger.info("Deleted NAT GW %s in %s", nat_id, region)
@@ -189,8 +225,10 @@ def _avg_daily_bytes_out(cw_regional, nat_id):
             Namespace="AWS/NATGateway",
             MetricName="BytesOutToDestination",
             Dimensions=[{"Name": "NatGatewayId", "Value": nat_id}],
-            StartTime=start, EndTime=end,
-            Period=86400, Statistics=["Sum"],
+            StartTime=start,
+            EndTime=end,
+            Period=86400,
+            Statistics=["Sum"],
         )
         points = resp.get("Datapoints", []) or []
         if not points:
@@ -206,9 +244,29 @@ def _publish_metrics(waste, found, actions, savings):
     cw.put_metric_data(
         Namespace=METRIC_NAMESPACE,
         MetricData=[
-            {"MetricName": "MonthlyWasteUsd",   "Value": float(waste),   "Unit": "None",  "Dimensions": dim},
-            {"MetricName": "FoundCount",        "Value": float(found),   "Unit": "Count", "Dimensions": dim},
-            {"MetricName": "ActionsTakenCount", "Value": float(actions), "Unit": "Count", "Dimensions": dim},
-            {"MetricName": "RunSavingsUsd",     "Value": float(savings), "Unit": "None",  "Dimensions": dim},
+            {
+                "MetricName": "MonthlyWasteUsd",
+                "Value": float(waste),
+                "Unit": "None",
+                "Dimensions": dim,
+            },
+            {
+                "MetricName": "FoundCount",
+                "Value": float(found),
+                "Unit": "Count",
+                "Dimensions": dim,
+            },
+            {
+                "MetricName": "ActionsTakenCount",
+                "Value": float(actions),
+                "Unit": "Count",
+                "Dimensions": dim,
+            },
+            {
+                "MetricName": "RunSavingsUsd",
+                "Value": float(savings),
+                "Unit": "None",
+                "Dimensions": dim,
+            },
         ],
     )

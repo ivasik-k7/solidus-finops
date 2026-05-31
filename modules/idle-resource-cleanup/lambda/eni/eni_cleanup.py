@@ -6,6 +6,7 @@ resource deletions (Lambda-in-VPC, EKS, RDS, EFS). Surfacing them lets the
 practice keep VPC console views actionable and catch parent-resource
 cleanup hygiene problems.
 """
+
 from __future__ import annotations
 
 import json
@@ -43,7 +44,7 @@ def handler(event, context):
     deleted: list[str] = []
     errors: list[dict] = []
 
-    for region in (SCAN_REGIONS or [None]):
+    for region in SCAN_REGIONS or [None]:
         ec2 = boto3.client("ec2", region_name=region, config=_boto)
         eff_region = region or ec2.meta.region_name
         try:
@@ -58,14 +59,24 @@ def handler(event, context):
                         if outcome.get("deleted"):
                             deleted.append(outcome["deleted"])
                     except Exception as e:
-                        logger.exception("Failed processing ENI %s", eni.get("NetworkInterfaceId"))
-                        errors.append({"region": eff_region, "eni_id": eni.get("NetworkInterfaceId"), "error": str(e)})
+                        logger.exception(
+                            "Failed processing ENI %s", eni.get("NetworkInterfaceId")
+                        )
+                        errors.append(
+                            {
+                                "region": eff_region,
+                                "eni_id": eni.get("NetworkInterfaceId"),
+                                "error": str(e),
+                            }
+                        )
         except Exception as e:
             logger.exception("ENI list failed in %s", eff_region)
             errors.append({"region": eff_region, "phase": "list", "error": str(e)})
 
     aging_count = sum(1 for f in findings if f.get("IsAging"))
-    severity = "high" if aging_count > 0 else ("medium" if len(findings) > 20 else "low")
+    severity = (
+        "high" if aging_count > 0 else ("medium" if len(findings) > 20 else "low")
+    )
     summary = {
         "AlertName": "Idle ENI scan",
         "severity": severity,
@@ -99,10 +110,17 @@ def _process(ec2, region: str, eni: dict) -> dict:
         return {}
 
     description = (eni.get("Description") or "").lower()
-    leaked_hint = any(s in description for s in (
-        "aws lambda", "elasticfilesystem", "amazon rds", "elasticloadbalancing",
-        "efs mount", "vpc endpoint",
-    ))
+    leaked_hint = any(
+        s in description
+        for s in (
+            "aws lambda",
+            "elasticfilesystem",
+            "amazon rds",
+            "elasticloadbalancing",
+            "efs mount",
+            "vpc endpoint",
+        )
+    )
 
     owner = tags.get("Owner") or "(no Owner tag)"
     state = idle_state.upsert_state(
@@ -143,8 +161,12 @@ def _process(ec2, region: str, eni: dict) -> dict:
 
     if state["IsNew"]:
         idle_state.record_action(
-            resource_type="ENI", resource_id=eni_id, region=region,
-            account_id=_ACCOUNT_ID, action_type="detected", actor_id=_ACTOR_ID,
+            resource_type="ENI",
+            resource_id=eni_id,
+            region=region,
+            account_id=_ACCOUNT_ID,
+            action_type="detected",
+            actor_id=_ACTOR_ID,
             notes=f"LeakedHint={leaked_hint}",
         )
 
@@ -153,8 +175,12 @@ def _process(ec2, region: str, eni: dict) -> dict:
 
     ec2.delete_network_interface(NetworkInterfaceId=eni_id)
     idle_state.record_action(
-        resource_type="ENI", resource_id=eni_id, region=region,
-        account_id=_ACCOUNT_ID, action_type="deleted", actor_id=_ACTOR_ID,
+        resource_type="ENI",
+        resource_id=eni_id,
+        region=region,
+        account_id=_ACCOUNT_ID,
+        action_type="deleted",
+        actor_id=_ACTOR_ID,
     )
     logger.info("Deleted ENI %s in %s", eni_id, region)
     return {"finding": finding, "deleted": eni_id}
@@ -165,9 +191,29 @@ def _publish_metrics(waste, found, actions, savings):
     cw.put_metric_data(
         Namespace=METRIC_NAMESPACE,
         MetricData=[
-            {"MetricName": "MonthlyWasteUsd",   "Value": float(waste),   "Unit": "None",  "Dimensions": dim},
-            {"MetricName": "FoundCount",        "Value": float(found),   "Unit": "Count", "Dimensions": dim},
-            {"MetricName": "ActionsTakenCount", "Value": float(actions), "Unit": "Count", "Dimensions": dim},
-            {"MetricName": "RunSavingsUsd",     "Value": float(savings), "Unit": "None",  "Dimensions": dim},
+            {
+                "MetricName": "MonthlyWasteUsd",
+                "Value": float(waste),
+                "Unit": "None",
+                "Dimensions": dim,
+            },
+            {
+                "MetricName": "FoundCount",
+                "Value": float(found),
+                "Unit": "Count",
+                "Dimensions": dim,
+            },
+            {
+                "MetricName": "ActionsTakenCount",
+                "Value": float(actions),
+                "Unit": "Count",
+                "Dimensions": dim,
+            },
+            {
+                "MetricName": "RunSavingsUsd",
+                "Value": float(savings),
+                "Unit": "None",
+                "Dimensions": dim,
+            },
         ],
     )

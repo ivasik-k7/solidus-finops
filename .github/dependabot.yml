@@ -13,6 +13,17 @@ updates:
 
   # ---------------------------------------------------------------------------
   # GitHub Actions
+  #
+  # Major version bumps for every Action are IGNORED — they were generating
+  # noisy PRs (e.g. actions/checkout 4→6, hashicorp/setup-terraform 3→4,
+  # terraform-linters/setup-tflint 4→6) that don't carry security CVEs and
+  # need manual coordination with breaking-change docs. Minor + patch
+  # updates still land as a single grouped PR each week.
+  #
+  # If a CVE is announced for an Action we use, bump the major manually:
+  #   1. Read the upstream changelog / migration guide
+  #   2. Test locally against the new major
+  #   3. Open a focused PR with the rationale in the body
   # ---------------------------------------------------------------------------
   - package-ecosystem: github-actions
     directory: /
@@ -32,6 +43,12 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    ignore:
+      # Suppress noisy major-version bumps for every Action. Add per-Action
+      # explicit allows here if a major bump becomes desired.
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
 
   # ---------------------------------------------------------------------------
   # Terraform — root

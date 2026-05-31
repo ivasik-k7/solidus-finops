@@ -6,6 +6,7 @@ Skips AMI-backed snapshots, exception-tagged snapshots, and anything
 younger than MIN_AGE_DAYS. Every deletion is logged to the audit trail
 with the estimated $ saved.
 """
+
 from __future__ import annotations
 
 import datetime as dt
@@ -41,8 +42,12 @@ _ACTOR_ID = f"lambda:{os.environ.get('AWS_LAMBDA_FUNCTION_NAME', 'unknown')}"
 
 
 def handler(event, context):
-    logger.info("Snapshot scan: dry_run=%s min_age=%sd regions=%s",
-                DRY_RUN, MIN_AGE_DAYS, SCAN_REGIONS or "[home]")
+    logger.info(
+        "Snapshot scan: dry_run=%s min_age=%sd regions=%s",
+        DRY_RUN,
+        MIN_AGE_DAYS,
+        SCAN_REGIONS or "[home]",
+    )
 
     findings: list[dict] = []
     deleted: list[str] = []
@@ -51,7 +56,7 @@ def handler(event, context):
     cumulative_savings = 0.0
     ceiling_hit = False
 
-    for region in (SCAN_REGIONS or [None]):
+    for region in SCAN_REGIONS or [None]:
         ec2 = boto3.client("ec2", region_name=region, config=_boto)
         eff_region = region or ec2.meta.region_name
 
@@ -63,21 +68,35 @@ def handler(event, context):
             ami_snapshots = set()
 
         try:
-            for page in ec2.get_paginator("describe_snapshots").paginate(OwnerIds=["self"]):
+            for page in ec2.get_paginator("describe_snapshots").paginate(
+                OwnerIds=["self"]
+            ):
                 for snap in page["Snapshots"]:
                     try:
-                        outcome = _process(ec2, eff_region, snap, ami_snapshots, cumulative_usd)
+                        outcome = _process(
+                            ec2, eff_region, snap, ami_snapshots, cumulative_usd
+                        )
                         if outcome.get("ceiling_hit"):
                             ceiling_hit = True
                         if outcome.get("finding"):
                             findings.append(outcome["finding"])
-                            cumulative_usd += outcome["finding"]["EstimatedMonthlyCostUsd"]
+                            cumulative_usd += outcome["finding"][
+                                "EstimatedMonthlyCostUsd"
+                            ]
                         if outcome.get("deleted"):
                             deleted.append(outcome["deleted"])
-                            cumulative_savings += outcome["finding"]["EstimatedMonthlyCostUsd"]
+                            cumulative_savings += outcome["finding"][
+                                "EstimatedMonthlyCostUsd"
+                            ]
                     except Exception as e:
                         logger.exception("Failed processing %s", snap.get("SnapshotId"))
-                        errors.append({"region": eff_region, "snapshot_id": snap.get("SnapshotId"), "error": str(e)})
+                        errors.append(
+                            {
+                                "region": eff_region,
+                                "snapshot_id": snap.get("SnapshotId"),
+                                "error": str(e),
+                            }
+                        )
         except Exception as e:
             logger.exception("Snapshot list failed in %s", eff_region)
             errors.append({"region": eff_region, "phase": "list", "error": str(e)})
@@ -125,7 +144,9 @@ def _collect_ami_snapshots(ec2):
     return snapshot_ids
 
 
-def _process(ec2, region: str, snap: dict, ami_snapshots: set, cumulative_usd: float) -> dict:
+def _process(
+    ec2, region: str, snap: dict, ami_snapshots: set, cumulative_usd: float
+) -> dict:
     snap_id = snap["SnapshotId"]
     start = snap["StartTime"]
     age_days = (dt.datetime.now(start.tzinfo) - start).days
@@ -145,7 +166,10 @@ def _process(ec2, region: str, snap: dict, ami_snapshots: set, cumulative_usd: f
         estimated_monthly_cost_usd=estimated,
         owner=owner,
         tags=tags,
-        resource_attrs={"VolumeSizeGiB": snap.get("VolumeSize"), "Description": snap.get("Description", "")[:200]},
+        resource_attrs={
+            "VolumeSizeGiB": snap.get("VolumeSize"),
+            "Description": snap.get("Description", "")[:200],
+        },
     )
 
     if not idle_state.is_actionable(state):
@@ -168,8 +192,12 @@ def _process(ec2, region: str, snap: dict, ami_snapshots: set, cumulative_usd: f
 
     if state["IsNew"]:
         idle_state.record_action(
-            resource_type="EBSSnapshot", resource_id=snap_id, region=region,
-            account_id=_ACCOUNT_ID, action_type="detected", actor_id=_ACTOR_ID,
+            resource_type="EBSSnapshot",
+            resource_id=snap_id,
+            region=region,
+            account_id=_ACCOUNT_ID,
+            action_type="detected",
+            actor_id=_ACTOR_ID,
             notes=f"AgeDays={age_days}",
         )
 
@@ -179,15 +207,23 @@ def _process(ec2, region: str, snap: dict, ami_snapshots: set, cumulative_usd: f
     if cumulative_usd + estimated > COST_CEILING_USD:
         logger.warning("Cost ceiling reached — skipping delete for %s", snap_id)
         idle_state.record_action(
-            resource_type="EBSSnapshot", resource_id=snap_id, region=region,
-            account_id=_ACCOUNT_ID, action_type="skipped-ceiling", actor_id=_ACTOR_ID,
+            resource_type="EBSSnapshot",
+            resource_id=snap_id,
+            region=region,
+            account_id=_ACCOUNT_ID,
+            action_type="skipped-ceiling",
+            actor_id=_ACTOR_ID,
         )
         return {"finding": finding, "ceiling_hit": True}
 
     ec2.delete_snapshot(SnapshotId=snap_id)
     idle_state.record_action(
-        resource_type="EBSSnapshot", resource_id=snap_id, region=region,
-        account_id=_ACCOUNT_ID, action_type="deleted", actor_id=_ACTOR_ID,
+        resource_type="EBSSnapshot",
+        resource_id=snap_id,
+        region=region,
+        account_id=_ACCOUNT_ID,
+        action_type="deleted",
+        actor_id=_ACTOR_ID,
         estimated_savings_usd=estimated,
     )
     return {"finding": finding, "deleted": snap_id}
@@ -206,9 +242,29 @@ def _publish_metrics(waste, found, actions, savings):
     cw.put_metric_data(
         Namespace=METRIC_NAMESPACE,
         MetricData=[
-            {"MetricName": "MonthlyWasteUsd",   "Value": float(waste),   "Unit": "None",  "Dimensions": dim},
-            {"MetricName": "FoundCount",        "Value": float(found),   "Unit": "Count", "Dimensions": dim},
-            {"MetricName": "ActionsTakenCount", "Value": float(actions), "Unit": "Count", "Dimensions": dim},
-            {"MetricName": "RunSavingsUsd",     "Value": float(savings), "Unit": "None",  "Dimensions": dim},
+            {
+                "MetricName": "MonthlyWasteUsd",
+                "Value": float(waste),
+                "Unit": "None",
+                "Dimensions": dim,
+            },
+            {
+                "MetricName": "FoundCount",
+                "Value": float(found),
+                "Unit": "Count",
+                "Dimensions": dim,
+            },
+            {
+                "MetricName": "ActionsTakenCount",
+                "Value": float(actions),
+                "Unit": "Count",
+                "Dimensions": dim,
+            },
+            {
+                "MetricName": "RunSavingsUsd",
+                "Value": float(savings),
+                "Unit": "None",
+                "Dimensions": dim,
+            },
         ],
     )

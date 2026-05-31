@@ -41,6 +41,7 @@ Design principles:
   - Idempotent — re-running on the same day overwrites snapshots safely
   - Modern datetime API — datetime.now(timezone.utc), no utcnow() deprecation
 """
+
 from __future__ import annotations
 
 import datetime as dt
@@ -61,32 +62,34 @@ logger.setLevel(logging.INFO)
 # Environment
 # ---------------------------------------------------------------------------
 
-METRIC_NAMESPACE             = os.environ["METRIC_NAMESPACE"]
-SSM_PREFIX                   = os.environ["SSM_PREFIX"]
-ATHENA_WORKGROUP             = os.environ["ATHENA_WORKGROUP"]
-ATHENA_DATABASE              = os.environ["ATHENA_DATABASE"]
-CUR_TABLE                    = os.environ["CUR_TABLE"]
-CUR_FULL_TABLE               = os.environ["CUR_FULL_TABLE"]
-ALLOCATION_TAG_KEYS          = json.loads(os.environ.get("ALLOCATION_TAG_KEYS", "[]"))
-SNS_TOPIC_ARN                = os.environ.get("SNS_TOPIC_ARN", "")
-SNAPSHOT_TABLE_NAME          = os.environ["SNAPSHOT_TABLE_NAME"]
-SNAPSHOT_TTL_DAYS            = int(os.environ.get("SNAPSHOT_TTL_DAYS", "400"))
-BUILTIN_KPIS_ENABLED         = json.loads(os.environ.get("BUILTIN_KPIS_ENABLED", "{}"))
-CUSTOM_KPIS                  = json.loads(os.environ.get("CUSTOM_KPIS_JSON", "{}"))
-TREND_METRICS_ENABLED        = os.environ.get("TREND_METRICS_ENABLED", "true").lower() == "true"
-WOW_DRIFT_ALARM_THRESHOLD    = os.environ.get("WOW_DRIFT_ALARM_THRESHOLD_PCT", "")
-TAG_VALUE_DASHBOARD_TAG      = os.environ.get("TAG_VALUE_DASHBOARD_TAG", "")
-TAG_VALUE_DASHBOARD_TOP_N    = int(os.environ.get("TAG_VALUE_DASHBOARD_TOP_N", "12"))
-DASHBOARD_NAME               = os.environ["DASHBOARD_NAME"]
-NAME_PREFIX                  = os.environ["NAME_PREFIX"]
+METRIC_NAMESPACE = os.environ["METRIC_NAMESPACE"]
+SSM_PREFIX = os.environ["SSM_PREFIX"]
+ATHENA_WORKGROUP = os.environ["ATHENA_WORKGROUP"]
+ATHENA_DATABASE = os.environ["ATHENA_DATABASE"]
+CUR_TABLE = os.environ["CUR_TABLE"]
+CUR_FULL_TABLE = os.environ["CUR_FULL_TABLE"]
+ALLOCATION_TAG_KEYS = json.loads(os.environ.get("ALLOCATION_TAG_KEYS", "[]"))
+SNS_TOPIC_ARN = os.environ.get("SNS_TOPIC_ARN", "")
+SNAPSHOT_TABLE_NAME = os.environ["SNAPSHOT_TABLE_NAME"]
+SNAPSHOT_TTL_DAYS = int(os.environ.get("SNAPSHOT_TTL_DAYS", "400"))
+BUILTIN_KPIS_ENABLED = json.loads(os.environ.get("BUILTIN_KPIS_ENABLED", "{}"))
+CUSTOM_KPIS = json.loads(os.environ.get("CUSTOM_KPIS_JSON", "{}"))
+TREND_METRICS_ENABLED = (
+    os.environ.get("TREND_METRICS_ENABLED", "true").lower() == "true"
+)
+WOW_DRIFT_ALARM_THRESHOLD = os.environ.get("WOW_DRIFT_ALARM_THRESHOLD_PCT", "")
+TAG_VALUE_DASHBOARD_TAG = os.environ.get("TAG_VALUE_DASHBOARD_TAG", "")
+TAG_VALUE_DASHBOARD_TOP_N = int(os.environ.get("TAG_VALUE_DASHBOARD_TOP_N", "12"))
+DASHBOARD_NAME = os.environ["DASHBOARD_NAME"]
+NAME_PREFIX = os.environ["NAME_PREFIX"]
 
 _boto = Config(retries={"max_attempts": 10, "mode": "adaptive"})
 athena = boto3.client("athena", config=_boto)
-cw     = boto3.client("cloudwatch", config=_boto)
-ssm    = boto3.client("ssm", config=_boto)
-ce     = boto3.client("ce", config=_boto)
-sns    = boto3.client("sns", config=_boto)
-ddb    = boto3.resource("dynamodb").Table(SNAPSHOT_TABLE_NAME)
+cw = boto3.client("cloudwatch", config=_boto)
+ssm = boto3.client("ssm", config=_boto)
+ce = boto3.client("ce", config=_boto)
+sns = boto3.client("sns", config=_boto)
+ddb = boto3.resource("dynamodb").Table(SNAPSHOT_TABLE_NAME)
 
 ATHENA_POLL_SECONDS = 2
 ATHENA_MAX_WAIT_SECONDS = 180
@@ -107,11 +110,11 @@ def handler(event, context):
 
     # ----- Built-in scalar KPIs -----
     for kpi_name, fn, enabled_key in (
-        ("AllocationCoveragePct",   _allocation_coverage,    "allocation_coverage"),
-        ("CommitmentCoveragePct",   _commitment_coverage,    "commitment_coverage"),
+        ("AllocationCoveragePct", _allocation_coverage, "allocation_coverage"),
+        ("CommitmentCoveragePct", _commitment_coverage, "commitment_coverage"),
         ("CommitmentUtilizationPct", _commitment_utilization, "commitment_utilization"),
-        ("AnomalyImpactUsdMtd",     _anomaly_impact_mtd,     "anomaly_impact"),
-        ("ForecastAbsDriftPct",     _forecast_drift,         "forecast_drift"),
+        ("AnomalyImpactUsdMtd", _anomaly_impact_mtd, "anomaly_impact"),
+        ("ForecastAbsDriftPct", _forecast_drift, "forecast_drift"),
     ):
         if not BUILTIN_KPIS_ENABLED.get(enabled_key, True):
             continue
@@ -133,10 +136,13 @@ def handler(event, context):
             top_services = _spend_by_service_top10()
             for svc, cost in top_services:
                 _publish_dimensioned_metric(
-                    "SpendByServiceUsd", cost,
+                    "SpendByServiceUsd",
+                    cost,
                     dimensions=[{"Name": "Service", "Value": svc}],
                 )
-            summary["SpendByServiceTop10"] = [{"service": s, "cost_usd": c} for s, c in top_services]
+            summary["SpendByServiceTop10"] = [
+                {"service": s, "cost_usd": c} for s, c in top_services
+            ]
         except Exception as e:
             logger.exception("Failed to compute SpendByService")
             errors.append(f"SpendByService: {e}")
@@ -160,13 +166,14 @@ def handler(event, context):
             tag_pairs = _spend_by_tag_value(TAG_VALUE_DASHBOARD_TAG)
             for tv, cost in tag_pairs:
                 _publish_dimensioned_metric(
-                    "SpendByTagValueUsd", cost,
+                    "SpendByTagValueUsd",
+                    cost,
                     dimensions=[
-                        {"Name": "TagKey",   "Value": TAG_VALUE_DASHBOARD_TAG},
+                        {"Name": "TagKey", "Value": TAG_VALUE_DASHBOARD_TAG},
                         {"Name": "TagValue", "Value": tv},
                     ],
                 )
-            top = tag_pairs[: TAG_VALUE_DASHBOARD_TOP_N]
+            top = tag_pairs[:TAG_VALUE_DASHBOARD_TOP_N]
             tag_value_panels = [{"tag_value": tv, "cost_usd": c} for tv, c in top]
             summary["SpendByTagValueTop"] = tag_value_panels
         except Exception as e:
@@ -181,14 +188,18 @@ def handler(event, context):
             if value is None:
                 logger.info("Custom KPI %s returned no value — skipped", ckey)
                 continue
-            _publish_scalar_kpi(metric_name, value, today, unit=cspec.get("unit", "None"))
+            _publish_scalar_kpi(
+                metric_name, value, today, unit=cspec.get("unit", "None")
+            )
             summary[metric_name] = value
-            custom_kpi_panels.append({
-                "key":         ckey,
-                "metric":      metric_name,
-                "value":       value,
-                "description": cspec.get("description", ""),
-            })
+            custom_kpi_panels.append(
+                {
+                    "key": ckey,
+                    "metric": metric_name,
+                    "value": value,
+                    "description": cspec.get("description", ""),
+                }
+            )
         except Exception as e:
             logger.exception("Failed custom KPI %s", ckey)
             errors.append(f"custom:{ckey}: {e}")
@@ -246,7 +257,9 @@ def _commitment_coverage() -> float | None:
     sp = ce.get_savings_plans_coverage(TimePeriod=time_period).get("Total", {})
 
     ri_pct = float(ri.get("CoverageHoursPercentage", "0") or "0") if ri else 0.0
-    sp_pct = float(((sp or {}).get("Coverage") or {}).get("CoveragePercentage", "0") or "0")
+    sp_pct = float(
+        ((sp or {}).get("Coverage") or {}).get("CoveragePercentage", "0") or "0"
+    )
 
     return round(min(100.0, ri_pct + sp_pct), 2)
 
@@ -260,7 +273,10 @@ def _commitment_utilization() -> float | None:
     sp_util = ce.get_savings_plans_utilization(TimePeriod=time_period).get("Total", {})
 
     ri_pct = float(ri_util.get("UtilizationPercentage", "0") or "0") if ri_util else 0.0
-    sp_pct = float(((sp_util or {}).get("Utilization") or {}).get("UtilizationPercentage", "0") or "0")
+    sp_pct = float(
+        ((sp_util or {}).get("Utilization") or {}).get("UtilizationPercentage", "0")
+        or "0"
+    )
 
     if ri_pct == 0 and sp_pct == 0:
         return None
@@ -276,10 +292,12 @@ def _anomaly_impact_mtd() -> float | None:
     first_of_month = today.replace(day=1)
     if today == first_of_month:
         return 0.0
-    resp = ce.get_anomalies(DateInterval={
-        "StartDate": first_of_month.isoformat(),
-        "EndDate":   today.isoformat(),
-    })
+    resp = ce.get_anomalies(
+        DateInterval={
+            "StartDate": first_of_month.isoformat(),
+            "EndDate": today.isoformat(),
+        }
+    )
     anomalies = resp.get("Anomalies", []) or []
     total = 0.0
     for a in anomalies:
@@ -391,9 +409,9 @@ def _compute_trends(metric_name: str, today: dt.date) -> dict[str, float]:
     resp = ddb.query(
         KeyConditionExpression="PK = :pk AND SK BETWEEN :start AND :end",
         ExpressionAttributeValues={
-            ":pk":    pk,
+            ":pk": pk,
             ":start": start_sk,
-            ":end":   today.isoformat(),
+            ":end": today.isoformat(),
         },
     )
     items = resp.get("Items", []) or []
@@ -403,7 +421,9 @@ def _compute_trends(metric_name: str, today: dt.date) -> dict[str, float]:
     by_date = {it["SK"]: float(it["Value"]) for it in items if "Value" in it}
 
     def avg(start: dt.date, end: dt.date) -> float | None:
-        vals = [v for d, v in by_date.items() if start.isoformat() <= d <= end.isoformat()]
+        vals = [
+            v for d, v in by_date.items() if start.isoformat() <= d <= end.isoformat()
+        ]
         return round(sum(vals) / len(vals), 4) if vals else None
 
     out: dict[str, float] = {}
@@ -445,28 +465,39 @@ def _publish_scalar_kpi(name: str, value: float, today: dt.date, unit: str = "No
         Overwrite=True,
         Tier="Standard",
     )
-    ddb.put_item(Item={
-        "PK":          f"KPI#{name}",
-        "SK":          today.isoformat(),
-        "MetricName":  name,
-        "Value":       Decimal(str(value)),
-        "Unit":        unit,
-        "GeneratedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "ExpireAt":    int((dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=SNAPSHOT_TTL_DAYS)).timestamp()),
-    })
+    ddb.put_item(
+        Item={
+            "PK": f"KPI#{name}",
+            "SK": today.isoformat(),
+            "MetricName": name,
+            "Value": Decimal(str(value)),
+            "Unit": unit,
+            "GeneratedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "ExpireAt": int(
+                (
+                    dt.datetime.now(dt.timezone.utc)
+                    + dt.timedelta(days=SNAPSHOT_TTL_DAYS)
+                ).timestamp()
+            ),
+        }
+    )
     logger.info("Published KPI %s = %s", name, value)
 
 
-def _publish_dimensioned_metric(name: str, value: float, dimensions: list[dict[str, str]]):
+def _publish_dimensioned_metric(
+    name: str, value: float, dimensions: list[dict[str, str]]
+):
     """CloudWatch only — dimensioned metrics aren't suitable for the scalar SSM mirror."""
     cw.put_metric_data(
         Namespace=METRIC_NAMESPACE,
-        MetricData=[{
-            "MetricName": name,
-            "Value":      float(value),
-            "Unit":       "None",
-            "Dimensions": dimensions,
-        }],
+        MetricData=[
+            {
+                "MetricName": name,
+                "Value": float(value),
+                "Unit": "None",
+                "Dimensions": dimensions,
+            }
+        ],
     )
 
 
@@ -474,10 +505,10 @@ def _publish_summary(summary: dict[str, Any], errors: list[str]):
     if not SNS_TOPIC_ARN:
         return  # standalone mode — no events topic, metrics + DDB + SSM still ran
     msg = {
-        "AlertName":   "FinOps daily KPI digest",
-        "severity":    "info" if not errors else "medium",
+        "AlertName": "FinOps daily KPI digest",
+        "severity": "info" if not errors else "medium",
         "GeneratedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "KPIs":        {k: v for k, v in summary.items() if not isinstance(v, (list, dict))},
+        "KPIs": {k: v for k, v in summary.items() if not isinstance(v, (list, dict))},
         "TopServices": summary.get("SpendByServiceTop10", []),
         "TopTagValues": summary.get("SpendByTagValueTop", []),
     }
@@ -504,69 +535,98 @@ def _update_dashboard(
     widgets: list[dict[str, Any]] = []
     y = 0
 
-    widgets.append({
-        "type": "text", "x": 0, "y": y, "width": 24, "height": 2,
-        "properties": {
-            "markdown": (
-                f"## FinOps KPIs — {NAME_PREFIX}\n\n"
-                f"Namespace `{METRIC_NAMESPACE}` — DDB snapshots `{SNAPSHOT_TABLE_NAME}` — "
-                f"refreshed by `{NAME_PREFIX}-kpi-aggregator` on every daily run."
-            )
-        },
-    })
+    widgets.append(
+        {
+            "type": "text",
+            "x": 0,
+            "y": y,
+            "width": 24,
+            "height": 2,
+            "properties": {
+                "markdown": (
+                    f"## FinOps KPIs — {NAME_PREFIX}\n\n"
+                    f"Namespace `{METRIC_NAMESPACE}` — DDB snapshots `{SNAPSHOT_TABLE_NAME}` — "
+                    f"refreshed by `{NAME_PREFIX}-kpi-aggregator` on every daily run."
+                )
+            },
+        }
+    )
     y += 2
 
     # Headline scalar KPIs
     if emitted_metrics:
         scalar_metric_rows = [[METRIC_NAMESPACE, m] for m in emitted_metrics[:6]]
-        widgets.append({
-            "type": "metric", "x": 0, "y": y, "width": 24, "height": 6,
-            "properties": {
-                "title":   "Headline KPIs (latest value)",
-                "view":    "singleValue",
-                "stacked": False,
-                "period":  86400,
-                "stat":    "Average",
-                "metrics": scalar_metric_rows,
-            },
-        })
+        widgets.append(
+            {
+                "type": "metric",
+                "x": 0,
+                "y": y,
+                "width": 24,
+                "height": 6,
+                "properties": {
+                    "title": "Headline KPIs (latest value)",
+                    "view": "singleValue",
+                    "stacked": False,
+                    "period": 86400,
+                    "stat": "Average",
+                    "metrics": scalar_metric_rows,
+                },
+            }
+        )
         y += 6
 
     # 7d/30d trend lines per scalar KPI
     if TREND_METRICS_ENABLED:
         for i, m in enumerate(emitted_metrics):
-            widgets.append({
-                "type": "metric",
-                "x": 12 * (i % 2), "y": y + 6 * (i // 2),
-                "width": 12, "height": 6,
-                "properties": {
-                    "title":   f"{m} — daily + 7d avg + 30d avg",
-                    "view":    "timeSeries",
-                    "stacked": False,
-                    "period":  86400,
-                    "stat":    "Average",
-                    "metrics": [
-                        [METRIC_NAMESPACE, m],
-                        [".", f"{m}_7dAvg"],
-                        [".", f"{m}_30dAvg"],
-                    ],
-                },
-            })
+            widgets.append(
+                {
+                    "type": "metric",
+                    "x": 12 * (i % 2),
+                    "y": y + 6 * (i // 2),
+                    "width": 12,
+                    "height": 6,
+                    "properties": {
+                        "title": f"{m} — daily + 7d avg + 30d avg",
+                        "view": "timeSeries",
+                        "stacked": False,
+                        "period": 86400,
+                        "stat": "Average",
+                        "metrics": [
+                            [METRIC_NAMESPACE, m],
+                            [".", f"{m}_7dAvg"],
+                            [".", f"{m}_30dAvg"],
+                        ],
+                    },
+                }
+            )
         if emitted_metrics:
             y += 6 * ((len(emitted_metrics) + 1) // 2)
 
     # Spend by service — top 10
-    widgets.append({
-        "type": "metric", "x": 0, "y": y, "width": 24, "height": 6,
-        "properties": {
-            "title":   "Spend by service — top 10 (current month)",
-            "view":    "timeSeries",
-            "stacked": True,
-            "period":  86400,
-            "stat":    "Sum",
-            "metrics": [[{"expression": f"SEARCH('Namespace=\"{METRIC_NAMESPACE}\" MetricName=\"SpendByServiceUsd\"', 'Sum')", "id": "e1"}]],
-        },
-    })
+    widgets.append(
+        {
+            "type": "metric",
+            "x": 0,
+            "y": y,
+            "width": 24,
+            "height": 6,
+            "properties": {
+                "title": "Spend by service — top 10 (current month)",
+                "view": "timeSeries",
+                "stacked": True,
+                "period": 86400,
+                "stat": "Sum",
+                "metrics": [
+                    [
+                        {
+                            "expression": f"SEARCH('Namespace=\"{METRIC_NAMESPACE}\" MetricName=\"SpendByServiceUsd\"', 'Sum')",
+                            "id": "e1",
+                        }
+                    ]
+                ],
+            },
+        }
+    )
     y += 6
 
     # Per-tag-value panel — one merged time-series widget showing top N values
@@ -575,38 +635,52 @@ def _update_dashboard(
             [
                 METRIC_NAMESPACE,
                 "SpendByTagValueUsd",
-                "TagKey", TAG_VALUE_DASHBOARD_TAG,
-                "TagValue", p["tag_value"],
+                "TagKey",
+                TAG_VALUE_DASHBOARD_TAG,
+                "TagValue",
+                p["tag_value"],
             ]
             for p in tag_value_panels[:TAG_VALUE_DASHBOARD_TOP_N]
         ]
-        widgets.append({
-            "type": "metric", "x": 0, "y": y, "width": 24, "height": 8,
-            "properties": {
-                "title":   f"Spend by {TAG_VALUE_DASHBOARD_TAG} — top {min(len(tag_value_panels), TAG_VALUE_DASHBOARD_TOP_N)}",
-                "view":    "timeSeries",
-                "stacked": True,
-                "period":  86400,
-                "stat":    "Sum",
-                "metrics": metric_rows,
-            },
-        })
+        widgets.append(
+            {
+                "type": "metric",
+                "x": 0,
+                "y": y,
+                "width": 24,
+                "height": 8,
+                "properties": {
+                    "title": f"Spend by {TAG_VALUE_DASHBOARD_TAG} — top {min(len(tag_value_panels), TAG_VALUE_DASHBOARD_TOP_N)}",
+                    "view": "timeSeries",
+                    "stacked": True,
+                    "period": 86400,
+                    "stat": "Sum",
+                    "metrics": metric_rows,
+                },
+            }
+        )
         y += 8
 
     # Custom KPI panel
     if custom_kpi_panels:
         rows = [[METRIC_NAMESPACE, p["metric"]] for p in custom_kpi_panels]
-        widgets.append({
-            "type": "metric", "x": 0, "y": y, "width": 24, "height": 6,
-            "properties": {
-                "title":   "Custom KPIs",
-                "view":    "timeSeries",
-                "stacked": False,
-                "period":  86400,
-                "stat":    "Average",
-                "metrics": rows,
-            },
-        })
+        widgets.append(
+            {
+                "type": "metric",
+                "x": 0,
+                "y": y,
+                "width": 24,
+                "height": 6,
+                "properties": {
+                    "title": "Custom KPIs",
+                    "view": "timeSeries",
+                    "stacked": False,
+                    "period": 86400,
+                    "stat": "Average",
+                    "metrics": rows,
+                },
+            }
+        )
         y += 6
 
     body = {"widgets": widgets}
@@ -635,12 +709,16 @@ def _run_athena(sql: str) -> list[list[str]]:
         if state == "SUCCEEDED":
             break
         if state in ("FAILED", "CANCELLED"):
-            reason = status["QueryExecution"]["Status"].get("StateChangeReason", "(no reason)")
+            reason = status["QueryExecution"]["Status"].get(
+                "StateChangeReason", "(no reason)"
+            )
             raise RuntimeError(f"Athena query {qid} {state}: {reason}")
         time.sleep(ATHENA_POLL_SECONDS)
         waited += ATHENA_POLL_SECONDS
     else:
-        raise TimeoutError(f"Athena query {qid} did not complete in {ATHENA_MAX_WAIT_SECONDS}s")
+        raise TimeoutError(
+            f"Athena query {qid} did not complete in {ATHENA_MAX_WAIT_SECONDS}s"
+        )
 
     rows: list[list[str]] = []
     next_token: str | None = None

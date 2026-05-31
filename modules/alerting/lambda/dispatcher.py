@@ -17,6 +17,7 @@ The module's Terraform passes the channel manifest as a JSON env var
 (CHANNEL_MANIFEST). Each channel's secret is resolved at runtime via
 Secrets Manager (cached per warm container).
 """
+
 from __future__ import annotations
 
 import datetime as dt
@@ -37,7 +38,9 @@ logger.setLevel(logging.INFO)
 CHANNEL_MANIFEST = json.loads(os.environ.get("CHANNEL_MANIFEST", "{}"))
 DEDUP_ENABLED = os.environ.get("DEDUP_ENABLED", "true").lower() == "true"
 DEDUP_WINDOW_MINS = int(os.environ.get("DEDUP_WINDOW_MINS", "60"))
-DEDUP_FINGERPRINT_FIELDS = json.loads(os.environ.get("DEDUP_FINGERPRINT", '["AlertName", "severity", "ResourceId"]'))
+DEDUP_FINGERPRINT_FIELDS = json.loads(
+    os.environ.get("DEDUP_FINGERPRINT", '["AlertName", "severity", "ResourceId"]')
+)
 AUDIT_ENABLED = os.environ.get("AUDIT_ENABLED", "true").lower() == "true"
 AUDIT_RETENTION_DAYS = int(os.environ.get("AUDIT_RETENTION_DAYS", "365"))
 EVENTS_TABLE_NAME = os.environ.get("EVENTS_TABLE_NAME", "")
@@ -104,7 +107,9 @@ def _process_record(record: dict) -> dict[str, int]:
     # Deduplication check
     fingerprint = _fingerprint(event)
     if DEDUP_ENABLED and _is_duplicate(fingerprint):
-        logger.info("Suppressing duplicate (fingerprint=%s subject=%s)", fingerprint, subject)
+        logger.info(
+            "Suppressing duplicate (fingerprint=%s subject=%s)", fingerprint, subject
+        )
         _audit(event, fingerprint, suppressed=True, deliveries=[])
         return {"dispatched": 0, "suppressed": 1, "failed": 0}
 
@@ -137,7 +142,10 @@ def _infer_severity(subject: str, parsed: dict) -> str:
     subj = (subject or "").lower()
     if any(k in subj for k in ("critical", "page", "incident", "outage")):
         return "critical"
-    if any(k in subj for k in ("error", "alarm", "exceeded", "anomaly", "high impact", "breach")):
+    if any(
+        k in subj
+        for k in ("error", "alarm", "exceeded", "anomaly", "high impact", "breach")
+    ):
         return "high"
     if any(k in subj for k in ("warning", "forecast", "approaching", "drift")):
         return "medium"
@@ -173,27 +181,35 @@ def _is_duplicate(fingerprint: str) -> bool:
 def _mark_seen(fingerprint: str):
     if not _table:
         return
-    _table.put_item(Item={
-        "PK": f"DEDUP#{fingerprint}",
-        "SeenAt": _now().isoformat(),
-        "ExpireAt": int((_now() + dt.timedelta(minutes=DEDUP_WINDOW_MINS)).timestamp()),
-    })
+    _table.put_item(
+        Item={
+            "PK": f"DEDUP#{fingerprint}",
+            "SeenAt": _now().isoformat(),
+            "ExpireAt": int(
+                (_now() + dt.timedelta(minutes=DEDUP_WINDOW_MINS)).timestamp()
+            ),
+        }
+    )
 
 
 def _audit(event: dict, fingerprint: str, *, suppressed: bool, deliveries: list[dict]):
     if not AUDIT_ENABLED or not _table:
         return
     now_iso = _now().isoformat()
-    _table.put_item(Item={
-        "PK": f"AUDIT#{now_iso}-{event['MessageId']}",
-        "Subject": event["Subject"],
-        "Severity": event["Severity"],
-        "Fingerprint": fingerprint,
-        "Suppressed": suppressed,
-        "Deliveries": deliveries,
-        "AuditedAt": now_iso,
-        "ExpireAt": int((_now() + dt.timedelta(days=AUDIT_RETENTION_DAYS)).timestamp()),
-    })
+    _table.put_item(
+        Item={
+            "PK": f"AUDIT#{now_iso}-{event['MessageId']}",
+            "Subject": event["Subject"],
+            "Severity": event["Severity"],
+            "Fingerprint": fingerprint,
+            "Suppressed": suppressed,
+            "Deliveries": deliveries,
+            "AuditedAt": now_iso,
+            "ExpireAt": int(
+                (_now() + dt.timedelta(days=AUDIT_RETENTION_DAYS)).timestamp()
+            ),
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -215,23 +231,37 @@ def _dispatch_all(event: dict) -> list[dict]:
         for ch in items:
             min_sev = ch.get("min_severity", "info")
             if event_severity_score < SEVERITY_ORDER.get(min_sev, 0):
-                deliveries.append({
-                    "type": ch_type, "label": ch.get("label"),
-                    "ok": True, "skipped": "below-min-severity",
-                })
+                deliveries.append(
+                    {
+                        "type": ch_type,
+                        "label": ch.get("label"),
+                        "ok": True,
+                        "skipped": "below-min-severity",
+                    }
+                )
                 continue
             try:
                 detail = adapter(ch, event, _resolve_secret, sqs)
-                deliveries.append({
-                    "type": ch_type, "label": ch.get("label"),
-                    "ok": True, "detail": detail,
-                })
+                deliveries.append(
+                    {
+                        "type": ch_type,
+                        "label": ch.get("label"),
+                        "ok": True,
+                        "detail": detail,
+                    }
+                )
             except Exception as e:
-                logger.exception("Channel %s/%s delivery failed", ch_type, ch.get("label"))
-                deliveries.append({
-                    "type": ch_type, "label": ch.get("label"),
-                    "ok": False, "error": str(e)[:200],
-                })
+                logger.exception(
+                    "Channel %s/%s delivery failed", ch_type, ch.get("label")
+                )
+                deliveries.append(
+                    {
+                        "type": ch_type,
+                        "label": ch.get("label"),
+                        "ok": False,
+                        "error": str(e)[:200],
+                    }
+                )
 
     return deliveries
 
@@ -261,9 +291,17 @@ def _publish_metrics(dispatched: int, suppressed: int, failed: int):
     cw.put_metric_data(
         Namespace=METRIC_NAMESPACE,
         MetricData=[
-            {"MetricName": "DispatchedCount", "Value": float(dispatched), "Unit": "Count"},
-            {"MetricName": "SuppressedCount", "Value": float(suppressed), "Unit": "Count"},
-            {"MetricName": "FailedCount",     "Value": float(failed),     "Unit": "Count"},
+            {
+                "MetricName": "DispatchedCount",
+                "Value": float(dispatched),
+                "Unit": "Count",
+            },
+            {
+                "MetricName": "SuppressedCount",
+                "Value": float(suppressed),
+                "Unit": "Count",
+            },
+            {"MetricName": "FailedCount", "Value": float(failed), "Unit": "Count"},
         ],
     )
 

@@ -14,6 +14,7 @@ Runs daily. For each AWS Budget in the account:
   - Publishes a structured digest to the events SNS topic with top breaches +
     top burn-rate budgets so the chat-notifier can render it richly
 """
+
 from __future__ import annotations
 
 import datetime as dt
@@ -46,7 +47,7 @@ _ACTOR_ID = f"lambda:{os.environ.get('AWS_LAMBDA_FUNCTION_NAME', 'unknown')}"
 _TABLE = ddb.Table(STATE_TABLE_NAME)
 
 SNAPSHOT_TTL_DAYS = 400  # ~13 months of daily snapshots
-STATE_TTL_DAYS = 90       # ~3 months after a budget stops appearing
+STATE_TTL_DAYS = 90  # ~3 months after a budget stops appearing
 
 
 # ---------------------------------------------------------------------------
@@ -90,15 +91,19 @@ def _period_bounds(time_unit: str, today: dt.date) -> tuple[dt.date, dt.date]:
     return start, next_start
 
 
-def _publish_metric(name: str, value: float, dimensions: list[dict[str, str]] | None = None):
+def _publish_metric(
+    name: str, value: float, dimensions: list[dict[str, str]] | None = None
+):
     cw.put_metric_data(
         Namespace=METRIC_NAMESPACE,
-        MetricData=[{
-            "MetricName": name,
-            "Value": float(value),
-            "Unit": "None",
-            "Dimensions": dimensions or [],
-        }],
+        MetricData=[
+            {
+                "MetricName": name,
+                "Value": float(value),
+                "Unit": "None",
+                "Dimensions": dimensions or [],
+            }
+        ],
     )
 
 
@@ -126,7 +131,10 @@ def handler(event, context):
     first_of_month = today.replace(day=1)
     try:
         anomalies_resp = ce.get_anomalies(
-            DateInterval={"StartDate": first_of_month.isoformat(), "EndDate": today.isoformat()},
+            DateInterval={
+                "StartDate": first_of_month.isoformat(),
+                "EndDate": today.isoformat(),
+            },
         )
         anomalies = anomalies_resp.get("Anomalies", []) or []
     except Exception:
@@ -152,7 +160,11 @@ def handler(event, context):
     errors: list[dict] = []
     for budget in all_budgets:
         try:
-            per_budget.append(_process_budget(budget, today, date_iso, now_iso, anomaly_active, anomaly_count))
+            per_budget.append(
+                _process_budget(
+                    budget, today, date_iso, now_iso, anomaly_active, anomaly_count
+                )
+            )
         except Exception as e:
             logger.exception("Failed processing budget %s", budget.get("BudgetName"))
             errors.append({"budget": budget.get("BudgetName"), "error": str(e)})
@@ -168,7 +180,11 @@ def handler(event, context):
     _put_ssm("active_budget_count", active_count)
 
     # Approaching-breach count: budgets with days-to-breach < 14
-    approaching = [r for r in per_budget if r["DaysToBreach"] is not None and 0 <= r["DaysToBreach"] < 14]
+    approaching = [
+        r
+        for r in per_budget
+        if r["DaysToBreach"] is not None and 0 <= r["DaysToBreach"] < 14
+    ]
     _publish_metric("ApproachingBreachCount", float(len(approaching)))
 
     # 5) Build daily digest
@@ -206,7 +222,11 @@ def handler(event, context):
         Subject="FinOps: Daily budget performance digest",
         Message=json.dumps(summary, default=str, indent=2),
     )
-    return {"status": "ok", "active_budgets": active_count, "adherence_score": adherence_score}
+    return {
+        "status": "ok",
+        "active_budgets": active_count,
+        "adherence_score": adherence_score,
+    }
 
 
 def _process_budget(
@@ -229,7 +249,9 @@ def _process_budget(
     days_in_period = (next_period_start - period_start).days
 
     variance_pct = round(100.0 * (actual - limit_amount) / max(limit_amount, 0.01), 2)
-    forecast_variance_pct = round(100.0 * (forecast - limit_amount) / max(limit_amount, 0.01), 2)
+    forecast_variance_pct = round(
+        100.0 * (forecast - limit_amount) / max(limit_amount, 0.01), 2
+    )
     is_adherent = actual <= limit_amount
 
     # Days-to-breach: how many more days at current burn rate before we hit the limit
@@ -264,7 +286,9 @@ def _process_budget(
         "ForecastedSpend": _to_decimal(forecast),
         "VariancePct": _to_decimal(variance_pct),
         "ForecastVariancePct": _to_decimal(forecast_variance_pct),
-        "DaysToBreach": _to_decimal(days_to_breach) if days_to_breach is not None else None,
+        "DaysToBreach": _to_decimal(days_to_breach)
+        if days_to_breach is not None
+        else None,
         "DaysElapsed": days_elapsed,
         "DaysInPeriod": days_in_period,
         "IsAdherent": is_adherent,
@@ -284,7 +308,9 @@ def _process_budget(
         "ActualSpend": _to_decimal(actual),
         "ForecastedSpend": _to_decimal(forecast),
         "VariancePct": _to_decimal(variance_pct),
-        "DaysToBreach": _to_decimal(days_to_breach) if days_to_breach is not None else None,
+        "DaysToBreach": _to_decimal(days_to_breach)
+        if days_to_breach is not None
+        else None,
         "IsAdherent": is_adherent,
         "ExpireAt": _epoch(SNAPSHOT_TTL_DAYS),
     }

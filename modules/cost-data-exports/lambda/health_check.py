@@ -17,6 +17,7 @@ Emits four CloudWatch metrics under FinOps/CostDataExports:
 Publishes a structured digest to SNS_TOPIC_ARN (if set) and raises on
 failure so the framework's DLQ + Errors alarm catch unprocessed runs.
 """
+
 from __future__ import annotations
 
 import datetime as dt
@@ -31,13 +32,13 @@ import boto3
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-BUCKET_NAME       = os.environ["BUCKET_NAME"]
-CRAWLER_NAME      = os.environ.get("CRAWLER_NAME", "")
-ATHENA_WORKGROUP  = os.environ.get("ATHENA_WORKGROUP", "")
-ATHENA_DATABASE   = os.environ.get("ATHENA_DATABASE", "")
-CUR_TABLE         = os.environ.get("CUR_TABLE", "")
-SNS_TOPIC_ARN     = os.environ.get("SNS_TOPIC_ARN", "")
-METRIC_NAMESPACE  = os.environ.get("METRIC_NAMESPACE", "FinOps/CostDataExports")
+BUCKET_NAME = os.environ["BUCKET_NAME"]
+CRAWLER_NAME = os.environ.get("CRAWLER_NAME", "")
+ATHENA_WORKGROUP = os.environ.get("ATHENA_WORKGROUP", "")
+ATHENA_DATABASE = os.environ.get("ATHENA_DATABASE", "")
+CUR_TABLE = os.environ.get("CUR_TABLE", "")
+SNS_TOPIC_ARN = os.environ.get("SNS_TOPIC_ARN", "")
+METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "FinOps/CostDataExports")
 
 s3 = boto3.client("s3")
 glue = boto3.client("glue")
@@ -138,11 +139,16 @@ def _crawler_age_hours() -> dict[str, Any]:
     state = crawler.get("State", "UNKNOWN")
     last = crawler.get("LastCrawl", {}) or {}
     status = last.get("Status")
-    last_end_str = last.get("LogStream") and None  # placeholder; CompletedOn is more useful
-    completed_on = last.get("StartTime")  # Glue uses StartTime in LastCrawl
+    # Glue's LastCrawl exposes StartTime; CompletedOn is not part of the
+    # response shape, so we use StartTime as a "last attempt" age signal.
+    completed_on = last.get("StartTime")
     age_hours = None
     if completed_on:
-        age_hours = round((_now() - completed_on.replace(tzinfo=dt.timezone.utc)).total_seconds() / 3600.0, 2)
+        age_hours = round(
+            (_now() - completed_on.replace(tzinfo=dt.timezone.utc)).total_seconds()
+            / 3600.0,
+            2,
+        )
     return {"age_hours": age_hours, "state": state, "status": status}
 
 
@@ -162,12 +168,18 @@ def _athena_probe() -> dict[str, Any]:
     # Poll for up to ~30s
     for _ in range(15):
         time.sleep(2)
-        status = athena.get_query_execution(QueryExecutionId=qid)["QueryExecution"]["Status"]
+        status = athena.get_query_execution(QueryExecutionId=qid)["QueryExecution"][
+            "Status"
+        ]
         state = status["State"]
         if state == "SUCCEEDED":
             return {"ok": True, "reason": "ok", "query_id": qid}
         if state in ("FAILED", "CANCELLED"):
-            return {"ok": False, "reason": f"{state}: {status.get('StateChangeReason', '(no reason)')}", "query_id": qid}
+            return {
+                "ok": False,
+                "reason": f"{state}: {status.get('StateChangeReason', '(no reason)')}",
+                "query_id": qid,
+            }
     return {"ok": False, "reason": "timeout", "query_id": qid}
 
 

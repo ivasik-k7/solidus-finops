@@ -12,6 +12,7 @@ State tracking via idle_state (shared helper):
   - is_actionable() honors snooze + exception lifecycle states.
   - Every mutation appends an ACTION row → audit trail + cumulative savings.
 """
+
 from __future__ import annotations
 
 import datetime as dt
@@ -53,7 +54,10 @@ _ACTOR_ID = f"lambda:{os.environ.get('AWS_LAMBDA_FUNCTION_NAME', 'unknown')}"
 def handler(event, context):
     logger.info(
         "EBS idle scan: dry_run=%s min_age=%sd ceiling=$%s regions=%s",
-        DRY_RUN, MIN_AGE_DAYS, COST_CEILING_USD, SCAN_REGIONS or "[home]",
+        DRY_RUN,
+        MIN_AGE_DAYS,
+        COST_CEILING_USD,
+        SCAN_REGIONS or "[home]",
     )
 
     all_p1: list[dict] = []
@@ -63,7 +67,7 @@ def handler(event, context):
     cumulative_phase1_usd = 0.0
     ceiling_hit = False
 
-    for region in (SCAN_REGIONS or [None]):
+    for region in SCAN_REGIONS or [None]:
         ec2 = boto3.client("ec2", region_name=region, config=_boto)
         eff_region = region or ec2.meta.region_name
 
@@ -79,8 +83,19 @@ def handler(event, context):
                             if outcome.get("Outcome") == "deleted":
                                 cumulative_savings += outcome.get("SavedUsd", 0.0)
                     except Exception as e:
-                        logger.exception("Phase 2 failed for %s in %s", vol.get("VolumeId"), eff_region)
-                        errors.append({"region": eff_region, "phase": 2, "volume_id": vol.get("VolumeId"), "error": str(e)})
+                        logger.exception(
+                            "Phase 2 failed for %s in %s",
+                            vol.get("VolumeId"),
+                            eff_region,
+                        )
+                        errors.append(
+                            {
+                                "region": eff_region,
+                                "phase": 2,
+                                "volume_id": vol.get("VolumeId"),
+                                "error": str(e),
+                            }
+                        )
         except Exception as e:
             logger.exception("Phase 2 list failed in %s", eff_region)
             errors.append({"region": eff_region, "phase": 2, "error": str(e)})
@@ -91,15 +106,30 @@ def handler(event, context):
             ):
                 for vol in page["Volumes"]:
                     try:
-                        outcome = _phase1_detect(ec2, eff_region, vol, cumulative_phase1_usd)
+                        outcome = _phase1_detect(
+                            ec2, eff_region, vol, cumulative_phase1_usd
+                        )
                         if outcome.get("ceiling_hit"):
                             ceiling_hit = True
                         if outcome.get("finding"):
                             all_p1.append(outcome["finding"])
-                            cumulative_phase1_usd += outcome["finding"]["EstimatedMonthlyCostUsd"]
+                            cumulative_phase1_usd += outcome["finding"][
+                                "EstimatedMonthlyCostUsd"
+                            ]
                     except Exception as e:
-                        logger.exception("Phase 1 failed for %s in %s", vol.get("VolumeId"), eff_region)
-                        errors.append({"region": eff_region, "phase": 1, "volume_id": vol.get("VolumeId"), "error": str(e)})
+                        logger.exception(
+                            "Phase 1 failed for %s in %s",
+                            vol.get("VolumeId"),
+                            eff_region,
+                        )
+                        errors.append(
+                            {
+                                "region": eff_region,
+                                "phase": 1,
+                                "volume_id": vol.get("VolumeId"),
+                                "error": str(e),
+                            }
+                        )
         except Exception as e:
             logger.exception("Phase 1 list failed in %s", eff_region)
             errors.append({"region": eff_region, "phase": 1, "error": str(e)})
@@ -181,8 +211,12 @@ def _phase1_detect(ec2, region: str, vol: dict, cumulative_usd: float) -> dict:
 
     if state["IsNew"]:
         idle_state.record_action(
-            resource_type="EBS", resource_id=vol_id, region=region,
-            account_id=_ACCOUNT_ID, action_type="detected", actor_id=_ACTOR_ID,
+            resource_type="EBS",
+            resource_id=vol_id,
+            region=region,
+            account_id=_ACCOUNT_ID,
+            action_type="detected",
+            actor_id=_ACTOR_ID,
             notes=f"AgeDays={age_days}",
         )
 
@@ -192,23 +226,29 @@ def _phase1_detect(ec2, region: str, vol: dict, cumulative_usd: float) -> dict:
     if cumulative_usd + estimated > COST_CEILING_USD:
         logger.warning("Cost ceiling reached — skipping snapshot for %s", vol_id)
         idle_state.record_action(
-            resource_type="EBS", resource_id=vol_id, region=region,
-            account_id=_ACCOUNT_ID, action_type="skipped-ceiling", actor_id=_ACTOR_ID,
+            resource_type="EBS",
+            resource_id=vol_id,
+            region=region,
+            account_id=_ACCOUNT_ID,
+            action_type="skipped-ceiling",
+            actor_id=_ACTOR_ID,
         )
         return {"finding": finding, "ceiling_hit": True}
 
     snap = ec2.create_snapshot(
         VolumeId=vol_id,
         Description=f"FinOps idle-cleanup retention snapshot for {vol_id}",
-        TagSpecifications=[{
-            "ResourceType": "snapshot",
-            "Tags": [
-                {"Key": "FinOpsRetainedFor", "Value": "audit"},
-                {"Key": "FinOpsSnapshotReason", "Value": "idle-cleanup"},
-                {"Key": "FinOpsSourceVolume", "Value": vol_id},
-                {"Key": EXCEPTION_TAG_KEY, "Value": "true"},
-            ],
-        }],
+        TagSpecifications=[
+            {
+                "ResourceType": "snapshot",
+                "Tags": [
+                    {"Key": "FinOpsRetainedFor", "Value": "audit"},
+                    {"Key": "FinOpsSnapshotReason", "Value": "idle-cleanup"},
+                    {"Key": "FinOpsSourceVolume", "Value": vol_id},
+                    {"Key": EXCEPTION_TAG_KEY, "Value": "true"},
+                ],
+            }
+        ],
     )
     snap_id = snap["SnapshotId"]
     now_iso = dt.datetime.now(dt.timezone.utc).isoformat()
@@ -221,8 +261,12 @@ def _phase1_detect(ec2, region: str, vol: dict, cumulative_usd: float) -> dict:
         ],
     )
     idle_state.record_action(
-        resource_type="EBS", resource_id=vol_id, region=region,
-        account_id=_ACCOUNT_ID, action_type="snapshotted", actor_id=_ACTOR_ID,
+        resource_type="EBS",
+        resource_id=vol_id,
+        region=region,
+        account_id=_ACCOUNT_ID,
+        action_type="snapshotted",
+        actor_id=_ACTOR_ID,
         notes=f"snapshot={snap_id}",
     )
     logger.info("Phase 1: tagged %s for deferred deletion (snap %s)", vol_id, snap_id)
@@ -243,7 +287,9 @@ def _phase2_finalize(ec2, region: str, vol: dict) -> dict | None:
         pending_since = dt.datetime.fromisoformat(pending_since_raw)
     except ValueError:
         return None
-    hours_pending = (dt.datetime.now(pending_since.tzinfo) - pending_since).total_seconds() / 3600.0
+    hours_pending = (
+        dt.datetime.now(pending_since.tzinfo) - pending_since
+    ).total_seconds() / 3600.0
 
     snap_info = ec2.describe_snapshots(SnapshotIds=[snap_id]).get("Snapshots", [])
     snap_state = snap_info[0]["State"] if snap_info else "missing"
@@ -263,8 +309,12 @@ def _phase2_finalize(ec2, region: str, vol: dict) -> dict | None:
             return action
         ec2.delete_volume(VolumeId=vol_id)
         idle_state.record_action(
-            resource_type="EBS", resource_id=vol_id, region=region,
-            account_id=_ACCOUNT_ID, action_type="deleted", actor_id=_ACTOR_ID,
+            resource_type="EBS",
+            resource_id=vol_id,
+            region=region,
+            account_id=_ACCOUNT_ID,
+            action_type="deleted",
+            actor_id=_ACTOR_ID,
             estimated_savings_usd=estimated,
             notes=f"snapshot={snap_id}",
         )
@@ -274,16 +324,24 @@ def _phase2_finalize(ec2, region: str, vol: dict) -> dict | None:
 
     if hours_pending > PENDING_GRACE_MAX_HOURS or snap_state in ("error", "missing"):
         action["Outcome"] = f"rollback-{snap_state}"
-        logger.error("Phase 2 rollback for %s — snap=%s hours=%s",
-                     vol_id, snap_state, round(hours_pending, 1))
+        logger.error(
+            "Phase 2 rollback for %s — snap=%s hours=%s",
+            vol_id,
+            snap_state,
+            round(hours_pending, 1),
+        )
         if not DRY_RUN:
             ec2.delete_tags(
                 Resources=[vol_id],
                 Tags=[{"Key": PENDING_TAG_KEY}, {"Key": PENDING_SINCE_TAG_KEY}],
             )
             idle_state.record_action(
-                resource_type="EBS", resource_id=vol_id, region=region,
-                account_id=_ACCOUNT_ID, action_type="rollback", actor_id=_ACTOR_ID,
+                resource_type="EBS",
+                resource_id=vol_id,
+                region=region,
+                account_id=_ACCOUNT_ID,
+                action_type="rollback",
+                actor_id=_ACTOR_ID,
                 notes=f"snap_state={snap_state}",
             )
         return action
@@ -308,10 +366,30 @@ def _publish_metrics(monthly_waste, found, actions, savings):
     cw.put_metric_data(
         Namespace=METRIC_NAMESPACE,
         MetricData=[
-            {"MetricName": "MonthlyWasteUsd",   "Value": float(monthly_waste), "Unit": "None",  "Dimensions": dim},
-            {"MetricName": "FoundCount",        "Value": float(found),         "Unit": "Count", "Dimensions": dim},
-            {"MetricName": "ActionsTakenCount", "Value": float(actions),       "Unit": "Count", "Dimensions": dim},
-            {"MetricName": "RunSavingsUsd",     "Value": float(savings),       "Unit": "None",  "Dimensions": dim},
+            {
+                "MetricName": "MonthlyWasteUsd",
+                "Value": float(monthly_waste),
+                "Unit": "None",
+                "Dimensions": dim,
+            },
+            {
+                "MetricName": "FoundCount",
+                "Value": float(found),
+                "Unit": "Count",
+                "Dimensions": dim,
+            },
+            {
+                "MetricName": "ActionsTakenCount",
+                "Value": float(actions),
+                "Unit": "Count",
+                "Dimensions": dim,
+            },
+            {
+                "MetricName": "RunSavingsUsd",
+                "Value": float(savings),
+                "Unit": "None",
+                "Dimensions": dim,
+            },
         ],
     )
 
@@ -319,6 +397,13 @@ def _publish_metrics(monthly_waste, found, actions, savings):
 def _estimate_monthly_cost(vol):
     size = vol["Size"]
     vol_type = vol["VolumeType"]
-    rates = {"gp3": 0.08, "gp2": 0.10, "io1": 0.125, "io2": 0.125,
-             "st1": 0.045, "sc1": 0.025, "standard": 0.05}
+    rates = {
+        "gp3": 0.08,
+        "gp2": 0.10,
+        "io1": 0.125,
+        "io2": 0.125,
+        "st1": 0.045,
+        "sc1": 0.025,
+        "standard": 0.05,
+    }
     return round(size * rates.get(vol_type, 0.10), 2)

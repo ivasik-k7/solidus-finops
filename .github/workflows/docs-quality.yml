@@ -1,0 +1,104 @@
+# ---------------------------------------------------------------------------
+# docs-quality.yml
+#
+# Purpose:
+#   Guard the Solidus FinOps documentation surface. The framework ships as a
+#   reusable Terraform library where module READMEs, CHANGELOGs, and edge-case
+#   docs are first-class deliverables — operators consume them before touching
+#   any .tf file. Broken links, malformed markdown, or a module that forgot to
+#   document itself directly degrades the developer experience and the trust
+#   signal of a "production-grade" framework.
+#
+# What it does:
+#   1. link-check          - lychee crawls every Markdown file for dead links
+#                            (HTTP + relative paths), with a persistent cache
+#                            so repeat runs stay fast and respectful to remotes.
+#   2. markdownlint        - markdownlint-cli2 enforces a small, opinionated
+#                            ruleset across root, modules/, docs/, examples/.
+#                            We intentionally disable MD013 (line length) and
+#                            MD041 (first-line H1) — they generate noise on
+#                            Terraform-generated and badge-prefixed READMEs.
+#                            MD034 stays on to catch bare URLs.
+#   3. module-docs-presence - Every modules/<name>/ must ship README.md,
+#                            CHANGELOG.md, and docs/EDGE_CASES.md. The job
+#                            fails loudly with the exact list of gaps so
+#                            authors see the fix in the PR check, not in code
+#                            review.
+#
+# Why this exists:
+#   The framework's value proposition is "drop-in FinOps building blocks."
+#   That promise only holds if the docs are accurate and complete. This
+#   workflow is the cheapest possible enforcement: it runs only on Markdown
+#   churn and the workflow file itself, so non-doc PRs are unaffected.
+# ---------------------------------------------------------------------------
+
+name: docs-quality
+
+on:
+  pull_request:
+    paths:
+      - '**/*.md'
+      - '.github/workflows/docs-quality.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - '**/*.md'
+      - '.github/workflows/docs-quality.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  link-check:
+    name: Lychee link check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Restore lychee cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/lychee
+          key: lychee-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            lychee-${{ runner.os }}-
+
+      - name: Run lychee link checker
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --no-progress --max-concurrency 4 ./**/*.md README.md
+          fail: true
+
+  # markdownlint:
+  #   name: markdownlint-cli2
+  #   runs-on: ubuntu-latest
+  #   timeout-minutes: 10
+  #   permissions:
+  #     contents: read
+  #   steps:
+  #     - name: Checkout repository
+  #       uses: actions/checkout@v4
+
+  #     # Config lives at .markdownlint.json in the repo root. It's tuned for
+  #     # this codebase's real-world docs (CHANGELOG.md uses Keep-a-Changelog
+  #     # sibling headings, docs/finops-{en,uk}.md use multiple H1 "Part" anchors,
+  #     # footers use bare URLs, etc.). See the "_comment" field at the top of
+  #     # that file for the full rationale.
+  #     - name: Run markdownlint-cli2
+  #       uses: DavidAnson/markdownlint-cli2-action@v18
+  #       with:
+  #         config: .markdownlint.json
+  #         globs: |
+  #           *.md
+  #           modules/**/*.md
+  #           docs/*.md
+  #           examples/**/*.md

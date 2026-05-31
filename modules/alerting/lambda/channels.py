@@ -12,6 +12,7 @@ SQS client (for the SQS adapter).
 Returns a small detail dict on success (e.g. {"status": 200}) or raises on
 failure.
 """
+
 from __future__ import annotations
 
 import json
@@ -24,25 +25,39 @@ logger = logging.getLogger()
 
 # Severity → presentation hints
 SEVERITY_STYLES = {
-    "critical": {"emoji": ":rotating_light:",     "color": "#7B0000", "label_color": "danger"},
-    "high":     {"emoji": ":warning:",             "color": "#D00000", "label_color": "danger"},
-    "medium":   {"emoji": ":information_source:",  "color": "#FF8C00", "label_color": "warning"},
-    "low":      {"emoji": ":bulb:",                "color": "#FFC107", "label_color": "good"},
-    "info":     {"emoji": ":speech_balloon:",      "color": "#3498DB", "label_color": "good"},
+    "critical": {
+        "emoji": ":rotating_light:",
+        "color": "#7B0000",
+        "label_color": "danger",
+    },
+    "high": {"emoji": ":warning:", "color": "#D00000", "label_color": "danger"},
+    "medium": {
+        "emoji": ":information_source:",
+        "color": "#FF8C00",
+        "label_color": "warning",
+    },
+    "low": {"emoji": ":bulb:", "color": "#FFC107", "label_color": "good"},
+    "info": {"emoji": ":speech_balloon:", "color": "#3498DB", "label_color": "good"},
 }
 
 # PagerDuty Events API severity normalisation (only critical/error/warning/info)
-_PD_SEVERITY = {"critical": "critical", "high": "error", "medium": "warning", "low": "info", "info": "info"}
+_PD_SEVERITY = {
+    "critical": "critical",
+    "high": "error",
+    "medium": "warning",
+    "low": "info",
+    "info": "info",
+}
 
 
 def get_adapter(channel_type: str) -> Callable | None:
     return {
-        "slack":             post_slack,
-        "teams":             post_teams,
-        "pagerduty":         post_pagerduty,
-        "opsgenie":          post_opsgenie,
-        "generic_webhooks":  post_generic_webhook,
-        "sqs":               send_sqs,
+        "slack": post_slack,
+        "teams": post_teams,
+        "pagerduty": post_pagerduty,
+        "opsgenie": post_opsgenie,
+        "generic_webhooks": post_generic_webhook,
+        "sqs": send_sqs,
     }.get(channel_type)
 
 
@@ -61,12 +76,18 @@ def post_slack(ch, event, resolve_secret, _sqs) -> dict:
 
     payload = {
         "text": f"{style['emoji']} *{event['Subject']}*",
-        "attachments": [{
-            "color": style["color"],
-            "fields": fields if fields else [{"title": "Message", "value": _truncate(event["MessageRaw"], 3000)}],
-            "footer": f"FinOps Framework · severity={event['Severity']}",
-            "ts": _epoch_from_iso(event["Timestamp"]),
-        }],
+        "attachments": [
+            {
+                "color": style["color"],
+                "fields": fields
+                if fields
+                else [
+                    {"title": "Message", "value": _truncate(event["MessageRaw"], 3000)}
+                ],
+                "footer": f"FinOps Framework · severity={event['Severity']}",
+                "ts": _epoch_from_iso(event["Timestamp"]),
+            }
+        ],
     }
     return _http_post_json(url, payload)
 
@@ -90,9 +111,15 @@ def post_teams(ch, event, resolve_secret, _sqs) -> dict:
         "themeColor": style["color"].lstrip("#"),
         "summary": event["Subject"],
         "title": f"{style['emoji']} {event['Subject']}",
-        "sections": [{
-            "facts": facts if facts else [{"name": "Message", "value": _truncate(event["MessageRaw"], 3000)}],
-        }],
+        "sections": [
+            {
+                "facts": facts
+                if facts
+                else [
+                    {"name": "Message", "value": _truncate(event["MessageRaw"], 3000)}
+                ],
+            }
+        ],
     }
     return _http_post_json(url, payload)
 
@@ -116,7 +143,8 @@ def post_pagerduty(ch, event, resolve_secret, _sqs) -> dict:
             "severity": _PD_SEVERITY.get(event["Severity"], "info"),
             "source": "finops-framework",
             "timestamp": event["Timestamp"],
-            "custom_details": event.get("Parsed") or {"message": _truncate(event["MessageRaw"], 1500)},
+            "custom_details": event.get("Parsed")
+            or {"message": _truncate(event["MessageRaw"], 1500)},
         },
     }
     return _http_post_json("https://events.pagerduty.com/v2/enqueue", payload)
@@ -138,15 +166,25 @@ def post_opsgenie(ch, event, resolve_secret, _sqs) -> dict:
     payload = {
         "message": _truncate(event["Subject"], 130),
         "alias": event.get("Parsed", {}).get("AlertName") or event["Subject"][:512],
-        "description": json.dumps(event.get("Parsed") or {"message": event["MessageRaw"]}, default=str)[:15000],
+        "description": json.dumps(
+            event.get("Parsed") or {"message": event["MessageRaw"]}, default=str
+        )[:15000],
         "priority": _opsgenie_priority(event["Severity"]),
         "source": "finops-framework",
     }
-    return _http_post_json(url, payload, headers={"Authorization": f"GenieKey {api_key}"})
+    return _http_post_json(
+        url, payload, headers={"Authorization": f"GenieKey {api_key}"}
+    )
 
 
 def _opsgenie_priority(sev: str) -> str:
-    return {"critical": "P1", "high": "P2", "medium": "P3", "low": "P4", "info": "P5"}.get(sev, "P5")
+    return {
+        "critical": "P1",
+        "high": "P2",
+        "medium": "P3",
+        "low": "P4",
+        "info": "P5",
+    }.get(sev, "P5")
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +227,9 @@ def send_sqs(ch, event, _resolve_secret, sqs_client) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _http_post_json(url: str, payload: Any, headers: dict[str, str] | None = None) -> dict:
+def _http_post_json(
+    url: str, payload: Any, headers: dict[str, str] | None = None
+) -> dict:
     data = json.dumps(payload, default=str).encode("utf-8")
     req_headers = {"Content-Type": "application/json"}
     if headers:
@@ -220,7 +260,9 @@ def _render_fields(parsed) -> list[dict]:
             continue
         if isinstance(v, (list, dict)):
             v = json.dumps(v, default=str)[:1000]
-        fields.append({"title": str(k), "value": str(v)[:1000], "short": len(str(v)) < 40})
+        fields.append(
+            {"title": str(k), "value": str(v)[:1000], "short": len(str(v)) < 40}
+        )
     return fields[:20]
 
 
@@ -247,6 +289,7 @@ def _truncate(s: str, n: int) -> str:
 
 def _epoch_from_iso(iso: str) -> int:
     import datetime as dt
+
     try:
         return int(dt.datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp())
     except Exception:

@@ -6,6 +6,7 @@ A load balancer is "idle" if BOTH:
   - It has no healthy targets (ALB/NLB) or no registered instances (CLB), AND
   - Its CloudWatch request count over IDLE_LOOKBACK_DAYS is below threshold.
 """
+
 from __future__ import annotations
 
 import datetime as dt
@@ -45,8 +46,13 @@ _ACTOR_ID = f"lambda:{os.environ.get('AWS_LAMBDA_FUNCTION_NAME', 'unknown')}"
 
 
 def handler(event, context):
-    logger.info("LB scan: dry_run=%s lookback=%sd threshold=%s regions=%s",
-                DRY_RUN, IDLE_LOOKBACK_DAYS, IDLE_REQUEST_THRESHOLD, SCAN_REGIONS or "[home]")
+    logger.info(
+        "LB scan: dry_run=%s lookback=%sd threshold=%s regions=%s",
+        DRY_RUN,
+        IDLE_LOOKBACK_DAYS,
+        IDLE_REQUEST_THRESHOLD,
+        SCAN_REGIONS or "[home]",
+    )
 
     findings: list[dict] = []
     deleted: list[str] = []
@@ -55,7 +61,7 @@ def handler(event, context):
     cumulative_savings = 0.0
     ceiling_hit = False
 
-    for region in (SCAN_REGIONS or [None]):
+    for region in SCAN_REGIONS or [None]:
         elbv2 = boto3.client("elbv2", region_name=region, config=_boto)
         elb = boto3.client("elb", region_name=region, config=_boto)
         cw_regional = boto3.client("cloudwatch", region_name=region, config=_boto)
@@ -65,38 +71,64 @@ def handler(event, context):
             for page in elbv2.get_paginator("describe_load_balancers").paginate():
                 for lb in page["LoadBalancers"]:
                     try:
-                        outcome = _process_v2(elbv2, cw_regional, eff_region, lb, cumulative_usd)
+                        outcome = _process_v2(
+                            elbv2, cw_regional, eff_region, lb, cumulative_usd
+                        )
                         if outcome.get("ceiling_hit"):
                             ceiling_hit = True
                         if outcome.get("finding"):
                             findings.append(outcome["finding"])
-                            cumulative_usd += outcome["finding"]["EstimatedMonthlyCostUsd"]
+                            cumulative_usd += outcome["finding"][
+                                "EstimatedMonthlyCostUsd"
+                            ]
                         if outcome.get("deleted"):
                             deleted.append(outcome["deleted"])
-                            cumulative_savings += outcome["finding"]["EstimatedMonthlyCostUsd"]
+                            cumulative_savings += outcome["finding"][
+                                "EstimatedMonthlyCostUsd"
+                            ]
                     except Exception as e:
                         logger.exception("Failed LB %s", lb.get("LoadBalancerArn"))
-                        errors.append({"region": eff_region, "lb_arn": lb.get("LoadBalancerArn"), "error": str(e)})
+                        errors.append(
+                            {
+                                "region": eff_region,
+                                "lb_arn": lb.get("LoadBalancerArn"),
+                                "error": str(e),
+                            }
+                        )
         except Exception as e:
             logger.exception("ALB/NLB list failed in %s", eff_region)
-            errors.append({"region": eff_region, "phase": "list-elbv2", "error": str(e)})
+            errors.append(
+                {"region": eff_region, "phase": "list-elbv2", "error": str(e)}
+            )
 
         try:
             for page in elb.get_paginator("describe_load_balancers").paginate():
                 for lb in page["LoadBalancerDescriptions"]:
                     try:
-                        outcome = _process_v1(elb, cw_regional, eff_region, lb, cumulative_usd)
+                        outcome = _process_v1(
+                            elb, cw_regional, eff_region, lb, cumulative_usd
+                        )
                         if outcome.get("ceiling_hit"):
                             ceiling_hit = True
                         if outcome.get("finding"):
                             findings.append(outcome["finding"])
-                            cumulative_usd += outcome["finding"]["EstimatedMonthlyCostUsd"]
+                            cumulative_usd += outcome["finding"][
+                                "EstimatedMonthlyCostUsd"
+                            ]
                         if outcome.get("deleted"):
                             deleted.append(outcome["deleted"])
-                            cumulative_savings += outcome["finding"]["EstimatedMonthlyCostUsd"]
+                            cumulative_savings += outcome["finding"][
+                                "EstimatedMonthlyCostUsd"
+                            ]
                     except Exception as e:
                         logger.exception("Failed CLB %s", lb.get("LoadBalancerName"))
-                        errors.append({"region": eff_region, "lb_name": lb.get("LoadBalancerName"), "error": str(e)})
+                        errors.append(
+                            {
+                                "region": eff_region,
+                                "lb_name": lb.get("LoadBalancerName"),
+                                "error": str(e),
+                            }
+                        )
         except Exception as e:
             logger.exception("CLB list failed in %s", eff_region)
             errors.append({"region": eff_region, "phase": "list-elb", "error": str(e)})
@@ -105,7 +137,9 @@ def handler(event, context):
     aging_count = sum(1 for f in findings if f.get("IsAging"))
     summary = {
         "AlertName": "Idle load balancer scan",
-        "severity": "high" if (total > 50 or aging_count > 0) else ("medium" if findings else "low"),
+        "severity": "high"
+        if (total > 50 or aging_count > 0)
+        else ("medium" if findings else "low"),
         "DryRun": DRY_RUN,
         "MinAgeDays": MIN_AGE_DAYS,
         "IdleLookbackDays": IDLE_LOOKBACK_DAYS,
@@ -162,32 +196,61 @@ def _process_v2(elbv2, cw_regional, region, lb, cumulative_usd):
         estimated_monthly_cost_usd=monthly,
         owner=owner,
         tags=tags,
-        resource_attrs={"Type": lb_type, "Name": lb_name, "HasHealthyTargets": healthy, "RecentRequestCount": int(rcount)},
+        resource_attrs={
+            "Type": lb_type,
+            "Name": lb_name,
+            "HasHealthyTargets": healthy,
+            "RecentRequestCount": int(rcount),
+        },
     )
     if not idle_state.is_actionable(state):
         return {}
 
-    finding = _v2_finding(lb_arn, lb_name, lb_type, created, age_days, healthy, rcount, monthly, owner, tags, state)
+    finding = _v2_finding(
+        lb_arn,
+        lb_name,
+        lb_type,
+        created,
+        age_days,
+        healthy,
+        rcount,
+        monthly,
+        owner,
+        tags,
+        state,
+    )
 
     if state["IsNew"]:
         idle_state.record_action(
-            resource_type="LoadBalancer", resource_id=lb_arn, region=region,
-            account_id=_ACCOUNT_ID, action_type="detected", actor_id=_ACTOR_ID,
+            resource_type="LoadBalancer",
+            resource_id=lb_arn,
+            region=region,
+            account_id=_ACCOUNT_ID,
+            action_type="detected",
+            actor_id=_ACTOR_ID,
         )
 
     if DRY_RUN:
         return {"finding": finding}
     if cumulative_usd + monthly > COST_CEILING_USD:
         idle_state.record_action(
-            resource_type="LoadBalancer", resource_id=lb_arn, region=region,
-            account_id=_ACCOUNT_ID, action_type="skipped-ceiling", actor_id=_ACTOR_ID,
+            resource_type="LoadBalancer",
+            resource_id=lb_arn,
+            region=region,
+            account_id=_ACCOUNT_ID,
+            action_type="skipped-ceiling",
+            actor_id=_ACTOR_ID,
         )
         return {"finding": finding, "ceiling_hit": True}
 
     elbv2.delete_load_balancer(LoadBalancerArn=lb_arn)
     idle_state.record_action(
-        resource_type="LoadBalancer", resource_id=lb_arn, region=region,
-        account_id=_ACCOUNT_ID, action_type="deleted", actor_id=_ACTOR_ID,
+        resource_type="LoadBalancer",
+        resource_id=lb_arn,
+        region=region,
+        account_id=_ACCOUNT_ID,
+        action_type="deleted",
+        actor_id=_ACTOR_ID,
         estimated_savings_usd=monthly,
     )
     return {"finding": finding, "deleted": lb_arn}
@@ -218,7 +281,12 @@ def _process_v1(elb, cw_regional, region, lb, cumulative_usd):
         estimated_monthly_cost_usd=CLB_MONTHLY_USD,
         owner=owner,
         tags=tags,
-        resource_attrs={"Type": "classic", "Name": name, "RegisteredInstances": len(instances), "RecentRequestCount": int(rcount)},
+        resource_attrs={
+            "Type": "classic",
+            "Name": name,
+            "RegisteredInstances": len(instances),
+            "RecentRequestCount": int(rcount),
+        },
     )
     if not idle_state.is_actionable(state):
         return {}
@@ -241,29 +309,53 @@ def _process_v1(elb, cw_regional, region, lb, cumulative_usd):
 
     if state["IsNew"]:
         idle_state.record_action(
-            resource_type="LoadBalancer", resource_id=f"clb/{name}", region=region,
-            account_id=_ACCOUNT_ID, action_type="detected", actor_id=_ACTOR_ID,
+            resource_type="LoadBalancer",
+            resource_id=f"clb/{name}",
+            region=region,
+            account_id=_ACCOUNT_ID,
+            action_type="detected",
+            actor_id=_ACTOR_ID,
         )
 
     if DRY_RUN:
         return {"finding": finding}
     if cumulative_usd + CLB_MONTHLY_USD > COST_CEILING_USD:
         idle_state.record_action(
-            resource_type="LoadBalancer", resource_id=f"clb/{name}", region=region,
-            account_id=_ACCOUNT_ID, action_type="skipped-ceiling", actor_id=_ACTOR_ID,
+            resource_type="LoadBalancer",
+            resource_id=f"clb/{name}",
+            region=region,
+            account_id=_ACCOUNT_ID,
+            action_type="skipped-ceiling",
+            actor_id=_ACTOR_ID,
         )
         return {"finding": finding, "ceiling_hit": True}
 
     elb.delete_load_balancer(LoadBalancerName=name)
     idle_state.record_action(
-        resource_type="LoadBalancer", resource_id=f"clb/{name}", region=region,
-        account_id=_ACCOUNT_ID, action_type="deleted", actor_id=_ACTOR_ID,
+        resource_type="LoadBalancer",
+        resource_id=f"clb/{name}",
+        region=region,
+        account_id=_ACCOUNT_ID,
+        action_type="deleted",
+        actor_id=_ACTOR_ID,
         estimated_savings_usd=CLB_MONTHLY_USD,
     )
     return {"finding": finding, "deleted": name}
 
 
-def _v2_finding(lb_arn, lb_name, lb_type, created, age_days, healthy, rcount, monthly, owner, tags, state):
+def _v2_finding(
+    lb_arn,
+    lb_name,
+    lb_type,
+    created,
+    age_days,
+    healthy,
+    rcount,
+    monthly,
+    owner,
+    tags,
+    state,
+):
     return {
         "LoadBalancerArn": lb_arn,
         "Name": lb_name,
@@ -299,7 +391,10 @@ def _tags_v1(elb, name):
 
 def _has_healthy_targets_v2(elbv2, lb_arn):
     try:
-        tgs = elbv2.describe_target_groups(LoadBalancerArn=lb_arn).get("TargetGroups", []) or []
+        tgs = (
+            elbv2.describe_target_groups(LoadBalancerArn=lb_arn).get("TargetGroups", [])
+            or []
+        )
         for tg in tgs:
             health = elbv2.describe_target_health(TargetGroupArn=tg["TargetGroupArn"])
             for t in health.get("TargetHealthDescriptions", []):
@@ -314,11 +409,18 @@ def _v2_request_count(cw_regional, lb_arn, lb_type):
     name = "RequestCount" if lb_type == "application" else "ActiveFlowCount"
     dim_value = "/".join(lb_arn.split("/")[1:])
     namespace = "AWS/ApplicationELB" if lb_type == "application" else "AWS/NetworkELB"
-    return _cw_sum(cw_regional, namespace, name, [{"Name": "LoadBalancer", "Value": dim_value}])
+    return _cw_sum(
+        cw_regional, namespace, name, [{"Name": "LoadBalancer", "Value": dim_value}]
+    )
 
 
 def _v1_request_count(cw_regional, name):
-    return _cw_sum(cw_regional, "AWS/ELB", "RequestCount", [{"Name": "LoadBalancerName", "Value": name}])
+    return _cw_sum(
+        cw_regional,
+        "AWS/ELB",
+        "RequestCount",
+        [{"Name": "LoadBalancerName", "Value": name}],
+    )
 
 
 def _cw_sum(cw_regional, namespace, metric_name, dimensions):
@@ -326,8 +428,13 @@ def _cw_sum(cw_regional, namespace, metric_name, dimensions):
     start = end - dt.timedelta(days=IDLE_LOOKBACK_DAYS)
     try:
         resp = cw_regional.get_metric_statistics(
-            Namespace=namespace, MetricName=metric_name, Dimensions=dimensions,
-            StartTime=start, EndTime=end, Period=86400, Statistics=["Sum"],
+            Namespace=namespace,
+            MetricName=metric_name,
+            Dimensions=dimensions,
+            StartTime=start,
+            EndTime=end,
+            Period=86400,
+            Statistics=["Sum"],
         )
         return sum(p["Sum"] for p in resp.get("Datapoints", []) or [])
     except Exception:
@@ -339,9 +446,29 @@ def _publish_metrics(waste, found, actions, savings):
     cw.put_metric_data(
         Namespace=METRIC_NAMESPACE,
         MetricData=[
-            {"MetricName": "MonthlyWasteUsd",   "Value": float(waste),   "Unit": "None",  "Dimensions": dim},
-            {"MetricName": "FoundCount",        "Value": float(found),   "Unit": "Count", "Dimensions": dim},
-            {"MetricName": "ActionsTakenCount", "Value": float(actions), "Unit": "Count", "Dimensions": dim},
-            {"MetricName": "RunSavingsUsd",     "Value": float(savings), "Unit": "None",  "Dimensions": dim},
+            {
+                "MetricName": "MonthlyWasteUsd",
+                "Value": float(waste),
+                "Unit": "None",
+                "Dimensions": dim,
+            },
+            {
+                "MetricName": "FoundCount",
+                "Value": float(found),
+                "Unit": "Count",
+                "Dimensions": dim,
+            },
+            {
+                "MetricName": "ActionsTakenCount",
+                "Value": float(actions),
+                "Unit": "Count",
+                "Dimensions": dim,
+            },
+            {
+                "MetricName": "RunSavingsUsd",
+                "Value": float(savings),
+                "Unit": "None",
+                "Dimensions": dim,
+            },
         ],
     )

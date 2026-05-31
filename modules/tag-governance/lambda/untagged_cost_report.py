@@ -16,6 +16,7 @@ Independent per-KPI failure handling: if Athena throttles a single query, the
 rest still publish; the Lambda raises at the end so SNS treats the invocation
 as failed and the DLQ captures it.
 """
+
 from __future__ import annotations
 
 import datetime as dt
@@ -83,7 +84,9 @@ def handler(event, context):
     try:
         top = _top_untagged_resources()
         summary["TopUntaggedResources"] = top
-        _publish_metric_scalar("TopUntaggedResourceMaxCostUsd", top[0]["cost_usd"] if top else 0.0)
+        _publish_metric_scalar(
+            "TopUntaggedResourceMaxCostUsd", top[0]["cost_usd"] if top else 0.0
+        )
     except Exception as e:
         logger.exception("top-untagged query failed")
         errors.append(f"top-untagged: {e}")
@@ -120,7 +123,9 @@ def handler(event, context):
     _publish_summary(summary, errors)
 
     if errors:
-        raise RuntimeError(f"{len(errors)} tag-governance KPI(s) failed: {'; '.join(errors)}")
+        raise RuntimeError(
+            f"{len(errors)} tag-governance KPI(s) failed: {'; '.join(errors)}"
+        )
 
     return {"status": "ok", "tags_evaluated": len(MANDATORY_TAG_KEYS)}
 
@@ -148,7 +153,9 @@ def _untagged_cost_per_mandatory_tag() -> dict[str, float]:
         """
         rows = _run_athena(sql)
         try:
-            cost = float(rows[1][0]) if len(rows) > 1 and rows[1] and rows[1][0] else 0.0
+            cost = (
+                float(rows[1][0]) if len(rows) > 1 and rows[1] and rows[1][0] else 0.0
+            )
         except (ValueError, TypeError):
             cost = 0.0
         out[tag_key] = round(cost, 2)
@@ -184,11 +191,13 @@ def _top_untagged_resources() -> list[dict[str, Any]]:
             cost = float(row[2]) if row[2] else 0.0
         except (ValueError, TypeError):
             cost = 0.0
-        out.append({
-            "resource_id": row[0],
-            "service": row[1],
-            "cost_usd": round(cost, 2),
-        })
+        out.append(
+            {
+                "resource_id": row[0],
+                "service": row[1],
+                "cost_usd": round(cost, 2),
+            }
+        )
     return out
 
 
@@ -222,15 +231,19 @@ def _coverage_by_mandatory_tag() -> dict[str, float]:
 # ---------------------------------------------------------------------------
 
 
-def _publish_metric(name: str, value: float, dimensions: list[dict[str, str]] | None = None):
+def _publish_metric(
+    name: str, value: float, dimensions: list[dict[str, str]] | None = None
+):
     _cw.put_metric_data(
         Namespace=METRIC_NAMESPACE,
-        MetricData=[{
-            "MetricName": name,
-            "Value": float(value),
-            "Unit": "None",
-            "Dimensions": dimensions or [],
-        }],
+        MetricData=[
+            {
+                "MetricName": name,
+                "Value": float(value),
+                "Unit": "None",
+                "Dimensions": dimensions or [],
+            }
+        ],
     )
 
 
@@ -263,7 +276,8 @@ def _snake(name: str) -> str:
     out = [name[0].lower()]
     for ch in name[1:]:
         if ch.isupper():
-            out.append("_"); out.append(ch.lower())
+            out.append("_")
+            out.append(ch.lower())
         else:
             out.append(ch)
     return "".join(out)
@@ -288,13 +302,19 @@ def _run_athena(sql: str) -> list[list[str | None]]:
         if state == "SUCCEEDED":
             break
         if state in ("FAILED", "CANCELLED"):
-            reason = status["QueryExecution"]["Status"].get("StateChangeReason", "(no reason)")
+            reason = status["QueryExecution"]["Status"].get(
+                "StateChangeReason", "(no reason)"
+            )
             raise RuntimeError(f"Athena query {qid} {state}: {reason}")
         time.sleep(ATHENA_POLL_SECONDS)
         waited += ATHENA_POLL_SECONDS
     else:
-        raise TimeoutError(f"Athena query {qid} did not complete in {ATHENA_MAX_WAIT_SECONDS}s")
+        raise TimeoutError(
+            f"Athena query {qid} did not complete in {ATHENA_MAX_WAIT_SECONDS}s"
+        )
 
     results = _athena.get_query_results(QueryExecutionId=qid)
-    return [[cell.get("VarCharValue") for cell in row.get("Data", [])]
-            for row in results["ResultSet"]["Rows"]]
+    return [
+        [cell.get("VarCharValue") for cell in row.get("Data", [])]
+        for row in results["ResultSet"]["Rows"]
+    ]
