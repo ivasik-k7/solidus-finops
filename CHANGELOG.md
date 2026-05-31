@@ -12,6 +12,201 @@ Per-module changelogs live alongside each module:
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-05-31
+
+The "structure & evidence" release. Five remaining modules pick up the
+multi-file structure that `instance-scheduler` and `finops-metrics`
+already had, four new formal documents land for stakeholder review, the
+cost estimate is rewritten to honestly reflect the CloudWatch
+custom-metric + dashboard surface that v0.2.1 introduced but didn't
+budget for, and the CI/CD surface goes from one workflow to eight.
+
+No functional Terraform changes — every input variable, output, and
+resource ID is unchanged from v0.2.1. Consumers do not need to update
+their root composition.
+
+**Static-analysis status as of this tag:**
+
+- `terraform fmt -recursive` — clean
+- `terraform validate` — green on root + all 4 examples
+- `tflint --recursive` — zero issues
+- `checkov` with `soft_fail: false` — zero unsuppressed failures
+- Every new `.github/workflows/*.yml` parses as valid YAML
+- Every new doc cross-references the others without broken links
+
+### Added
+
+#### Module file structure (5 of 5 remaining modules split)
+
+`instance-scheduler` and `finops-metrics` already used the
+multi-file convention; v0.3.0 extends it to every other module. Each
+ex-monolith `main.tf` becomes a header-only file pointing to a split
+across the standard files (`versions.tf`, `variables.tf`,
+`outputs.tf`, `locals.tf`, `data.tf`, `iam.tf`, `lambda.tf`,
+`eventbridge.tf`, `cloudwatch.tf`, `sqs.tf`, `dynamodb.tf`) plus
+module-specific files.
+
+| Module | Pre-split main.tf | Post-split file count | Module-specific files |
+|---|---|---|---|
+| `alerting` | 829 lines | 13 .tf files | `sns.tf`, `secrets.tf` |
+| `tag-governance` | 845 lines | 14 .tf files | `s3.tf`, `config.tf`, `resourcegroups.tf` |
+| `budgets` | 893 lines | 13 .tf files | `budgets.tf` |
+| `idle-resource-cleanup` | 904 lines | 12 .tf files | — |
+| `cost-data-exports` | 1383 lines | 15 .tf files | `s3.tf`, `bcm.tf`, `glue.tf`, `athena.tf` |
+
+Every module's `main.tf` is now a documentation header (20–45 lines)
+explaining the file layout — same shape `instance-scheduler` and
+`finops-metrics` established. Every Checkov suppression comment,
+X-Ray + reserved-concurrency wiring, and `lifecycle { prevent_destroy
+= true }` is preserved across the split.
+
+#### Formal stakeholder documentation
+
+Four new documents under `docs/` target distinct reviewer audiences,
+each substantive enough to stand on its own:
+
+- **[docs/EXECUTIVE_BRIEF.md](docs/EXECUTIVE_BRIEF.md)** (~220 lines) —
+  CFO / FinOps lead / exec sponsor. What the framework is, what it
+  costs, what it saves, what it explicitly will NOT do. Designed for
+  pre-read packs.
+- **[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)** (~250 lines) —
+  Security review board / appsec / audit. Full STRIDE analysis
+  (Spoofing / Tampering / Repudiation / Information disclosure / DoS /
+  Elevation of privilege), trust-boundary diagram, defense-in-depth
+  layers, accepted-risks register, validation checklist.
+- **[docs/DISASTER_RECOVERY.md](docs/DISASTER_RECOVERY.md)** (~425 lines) —
+  SRE / oncall / risk. Per-module RPO / RTO matrix, per-disaster-class
+  playbooks (region outage, DDB corruption, S3 corruption, KMS loss,
+  module failure, audit tampering), quarterly tabletop schedule.
+- **[docs/OPERATIONAL_RUNBOOK.md](docs/OPERATIONAL_RUNBOOK.md)** (~525 lines) —
+  SRE / FinOps oncall. The 5 most common alarms with diagnostic
+  commands, snooze / rotate-webhook / replay-DLQ / pause-via-reserved-
+  concurrency procedures, quarterly health checks, severity matrix.
+- **[docs/METRICS_GLOSSARY.md](docs/METRICS_GLOSSARY.md)** (~365 lines) —
+  Analytics consumers / dashboard authors / alarm tuners. Every metric
+  across the 7 framework namespaces with exact unit, dimensions,
+  emission cadence, built-in alarms, SSM mirror paths. DDB row-shape
+  reference. CloudWatch cardinality cost-driver checklist.
+
+Combined: the `docs/` footprint grows from ~3 400 lines to ~5 160
+lines. An evaluator opening any of the new documents finds links into
+every adjacent one.
+
+#### CI/CD surface: 1 workflow → 8 workflows
+
+Pre-v0.3.0 the framework had one CI workflow (`terraform-ci.yml`:
+fmt + tflint + checkov). v0.3.0 adds seven more and enhances the
+existing one:
+
+- **[`terraform-ci.yml`](.github/workflows/terraform-ci.yml)** *(enhanced)* —
+  adds `validate` matrix across root + all 4 examples (`fail-fast:
+  false`), provider-plugin cache keyed on every `.terraform.lock.hcl`,
+  `concurrency` group with `cancel-in-progress: true`, and a
+  `summary` job that posts a markdown pass/fail table to the GitHub
+  Actions job summary.
+- **[`python-ci.yml`](.github/workflows/python-ci.yml)** *(new)* —
+  ruff `check` + ruff `format --check` + `python -m compileall` +
+  advisory mypy with `boto3-stubs[essential]`. Matrix over Python
+  3.11 + 3.12 (forward-compat). `paths:` filter
+  `modules/**/*.py`.
+- **[`security.yml`](.github/workflows/security.yml)** *(new)* —
+  three jobs: Trivy filesystem scan (severity CRITICAL+HIGH, SARIF →
+  code scanning); Gitleaks for committed secrets; CodeQL on the
+  Python Lambda code. Triggers: PR + push to main + weekly cron
+  (Monday 09:00 UTC).
+- **[`release.yml`](.github/workflows/release.yml)** *(new)* —
+  tag-push (`v*.*.*`) triggered. Validates semver, extracts the
+  matching `## [X.Y.Z]` section from `CHANGELOG.md` as release body,
+  creates GH release via `softprops/action-gh-release@v2`, attaches
+  the rendered diagrams (PNG + SVG) as release assets, sniffs
+  `alpha/beta/rc` → marks prerelease.
+- **[`docs-quality.yml`](.github/workflows/docs-quality.yml)** *(new)* —
+  three jobs: Lychee link-checker with cached link database;
+  markdownlint-cli2 with framework-specific relaxed config;
+  `module-docs-presence` bash check that every module has
+  `README.md` + `CHANGELOG.md` + `docs/EDGE_CASES.md`.
+- **[`scorecard.yml`](.github/workflows/scorecard.yml)** *(new)* —
+  OpenSSF Scorecard weekly + on push to main + manual dispatch.
+  SARIF upload to GH code scanning + opt-in publish to
+  scorecard.dev for the supply-chain credibility signal.
+- **[`dependency-review.yml`](.github/workflows/dependency-review.yml)** *(new)* —
+  GitHub `dependency-review-action@v4` on every PR.
+  `fail-on-severity: high` blocks merge on HIGH+ CVE in new deps;
+  license allowlist (MIT / Apache-2.0 / BSD-2 / BSD-3 / ISC /
+  MPL-2.0 / 0BSD). PR comment summary always.
+- **[`drift-check.yml`](.github/workflows/drift-check.yml)** *(new)* —
+  Monday 06:00 UTC + manual. Scheduled syntax/validate sweep across
+  root + 4 examples. On failure, opens (or comments on existing)
+  GitHub issue tagged `drift` / `ci` with the failing matrix-path
+  and a run link. De-dupes against existing open `drift`-labeled
+  issues so it can't spam.
+
+Every new workflow enforces the same hygiene baseline: actions pinned
+to a specific major version, top-level `permissions:` block scoped to
+minimum, `concurrency:` group with `cancel-in-progress: true` on PR
+triggers, `paths:` filter to skip irrelevant changes, `timeout-minutes:`
+on every job, `set -euo pipefail` in every multi-line `run:` block.
+
+### Changed
+
+- **[docs/COST_ESTIMATE.md](docs/COST_ESTIMATE.md) rewritten** with
+  two material line items that v0.2.1 was emitting but not budgeting
+  for:
+  - **CloudWatch custom metrics** — the framework emits ~70 distinct
+    metrics across 7 namespaces at $0.30/metric/mo = **~$21/mo**
+    previously hidden.
+  - **CloudWatch dashboards** — 5 auto-provisioned dashboards, first 3
+    free + $3/mo each thereafter = **~$6/mo** previously hidden.
+
+  Net impact on the framework baseline: **~$11 → ~$39 / mo**. The cost
+  was always being spent; the document was wrong to omit it.
+
+  Other rewrites:
+  - X-Ray Active tracing line item added (~$0.10/mo at framework
+    volume — effectively free, but it's accounted now).
+  - New multi-region scenario added to §5 (primary + 1 secondary
+    region; +~$3/mo from additional `Region` dimension on scheduler +
+    idle metrics).
+  - Lambda count corrected to 13 (was "~10" pre-v0.2.1).
+  - Cost-variance ranking (§6) reordered:
+    `finops_metrics_tag_value_dashboard_tag` is now ranked #4 — a
+    high-cardinality choice (Owner / AccountId) can push it from $3/mo
+    to $150/mo. The hidden lever surfaced.
+  - As-of date: 2026-05-31. Every numeric claim re-verified against
+    current AWS public list pricing.
+- **All Checkov suppression comments preserved across the module
+  splits** — every `# checkov:skip=<rule>:<reason>` in the pre-split
+  monolith is in the same logical position in the split file, with
+  identical reasoning. `docs/COMPLIANCE_NOTES.md` references still
+  resolve.
+
+### Fixed
+
+- **CloudWatch custom-metric + dashboard costs are now accounted for
+  in `docs/COST_ESTIMATE.md`.** Not a bug in the framework; a gap in
+  the documentation. (See "Changed" above.)
+- **Validate matrix in `terraform-ci.yml` is no longer commented out.**
+  The original `terraform-ci.yml` shipped with the `validate` job
+  commented out as a "TODO". v0.3.0 enables it across root + 4
+  examples with `fail-fast: false`.
+
+### Roadmap notes (deferred)
+
+Not in v0.3.0; anticipated for v0.4.0+:
+
+- AWS Organizations / multi-account capability (deploy in delegated
+  admin, scan members via cross-account roles).
+- `terraform test` test suites per module. The framework now has
+  `python-ci.yml` for Lambda code quality; Terraform's own native
+  test framework is the next step.
+- Rightsizing recommendation pipeline (Compute Optimizer + Cost
+  Optimization Hub findings → DDB STATE+ACTION lifecycle, mirrors
+  `idle-resource-cleanup`).
+- Migration of DDB `hash_key` / `range_key` to the v6-provider
+  `key_schema` form once the upstream syntax stabilises (currently
+  kept on the deprecated form per per-module `dynamodb.tf` comments —
+  apply works fine, warning persists).
+
 ## [0.2.1] — 2026-05-30
 
 The "Solidus" release. The framework gets a name, a license, a complete

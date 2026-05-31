@@ -1,0 +1,62 @@
+name: dependency-review
+
+# GitHub Dependency Review gate for Solidus FinOps pull requests.
+#
+# Solidus FinOps ships Terraform providers (hashicorp/aws, hashicorp/archive),
+# Python tooling (boto3, diagrams) bundled with each Lambda, plus pre-commit
+# hooks and GitHub Actions. Any of these can introduce a transitive CVE or a
+# license that conflicts with the framework's Apache-2.0 distribution terms.
+#
+# This workflow runs GitHub's dependency-review-action on every pull request
+# and BLOCKS the merge if either condition is true:
+#
+#   1. A newly introduced (or version-bumped) dependency carries a vulnerability
+#      of HIGH or CRITICAL severity.
+#   2. A newly introduced dependency uses a license outside the permissive
+#      allow-list compatible with Apache-2.0 redistribution.
+#
+# Findings are posted back to the PR conversation as a summary comment so
+# reviewers can see exactly what changed without digging into the Actions logs.
+# Snapshot warnings (race between Dependabot/Renovate and the review run) are
+# retried automatically rather than failing the check spuriously.
+
+on:
+  pull_request:
+    paths:
+      - "**/requirements*.txt"
+      - "**/pyproject.toml"
+      - "**/Pipfile"
+      - "**/Pipfile.lock"
+      - "**/poetry.lock"
+      - "**.tf"
+      - "**.tf.json"
+      - ".terraform.lock.hcl"
+      - "**/.terraform.lock.hcl"
+      - ".pre-commit-config.yaml"
+      - ".github/workflows/**"
+      - ".github/dependabot.yml"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: dependency-review-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: dependency-review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          allow-licenses: 'MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, MPL-2.0, 0BSD'
+          comment-summary-in-pr: always
+          retry-on-snapshot-warnings: true

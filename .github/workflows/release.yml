@@ -1,0 +1,178 @@
+# ---------------------------------------------------------------------------
+# release.yml — Solidus FinOps tagged release publisher
+#
+# Purpose
+# -------
+# When a maintainer pushes a semver tag (vX.Y.Z), this workflow cuts the
+# corresponding GitHub Release. It is the single source of truth for the
+# "what changed" surface seen by downstream consumers of the framework.
+#
+# What it does
+# -------------
+#   1. Validates the tag is strict semver (vMAJOR.MINOR.PATCH). Pre-release
+#      suffixes (-alpha, -beta, -rc.N) are NOT accepted via this strict path;
+#      they are detected separately and marked as GitHub prereleases.
+#   2. Extracts the matching section from the root CHANGELOG.md. The repo's
+#      changelog follows Keep-a-Changelog with em-dash headers, e.g.
+#        ## [0.2.1] — 2026-05-30
+#      The section runs until the next "## [" header. If the section is
+#      missing, the job fails fast with an actionable message — the changelog
+#      is the contract, not an afterthought.
+#   3. Attaches rendered architecture/structure diagrams as release assets
+#      when present, so consumers can grab the SVG/PNG without cloning.
+#   4. Publishes the release via softprops/action-gh-release@v2.
+#
+# Why this matters for FinOps consumers
+# -------------------------------------
+# Solidus FinOps is consumed as pinned Terraform module refs. Downstream
+# users diff release notes to decide whether a bump is safe — so the release
+# body must be authoritative and the tag must be reproducibly verifiable.
+# ---------------------------------------------------------------------------
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository at tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag is strict semver
+        id: validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_ref="${GITHUB_REF#refs/tags/}"
+          echo "Tag pushed: ${tag_ref}"
+
+          # Strict release tag: vMAJOR.MINOR.PATCH only.
+          # Pre-release tags (e.g. v0.3.0-rc.1) are handled by the prerelease
+          # sniffer below and use a relaxed pattern.
+          strict_re='^v[0-9]+\.[0-9]+\.[0-9]+$'
+          prerelease_re='^v[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc)(\.[0-9]+)?$'
+
+          if [[ "${tag_ref}" =~ ${strict_re} ]]; then
+            is_prerelease="false"
+          elif [[ "${tag_ref}" =~ ${prerelease_re} ]]; then
+            is_prerelease="true"
+          else
+            echo "::error::Tag '${tag_ref}' does not match required semver format."
+            echo "::error::Expected 'vMAJOR.MINOR.PATCH' (e.g. v0.2.1) or a pre-release like 'v0.3.0-rc.1'."
+            exit 1
+          fi
+
+          # Strip leading 'v' to get the changelog key.
+          version="${tag_ref#v}"
+
+          {
+            echo "tag=${tag_ref}"
+            echo "version=${version}"
+            echo "is_prerelease=${is_prerelease}"
+          } >> "${GITHUB_OUTPUT}"
+
+          echo "Resolved version: ${version} (prerelease=${is_prerelease})"
+
+      - name: Extract changelog section for this version
+        id: changelog
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.validate.outputs.version }}"
+          changelog_path="CHANGELOG.md"
+
+          if [[ ! -f "${changelog_path}" ]]; then
+            echo "::error::CHANGELOG.md not found at repo root."
+            exit 1
+          fi
+
+          # Awk extracts lines between '## [X.Y.Z]' and the next '## [' header.
+          # The CHANGELOG uses an em-dash (U+2014) in section headers; we match
+          # on the bracketed version only, which is unambiguous and dash-agnostic.
+          notes="$(
+            awk -v ver="${version}" '
+              BEGIN { capture = 0 }
+              /^## \[/ {
+                if (capture == 1) { exit }
+                if ($0 ~ "^## \\[" ver "\\]") { capture = 1; next }
+              }
+              capture == 1 { print }
+            ' "${changelog_path}"
+          )"
+
+          # Trim leading/trailing blank lines without disturbing internal blanks.
+          notes="$(printf '%s\n' "${notes}" | awk 'NF { found = 1 } found { print }' | tac | awk 'NF { found = 1 } found { print }' | tac)"
+
+          if [[ -z "${notes}" ]]; then
+            echo "::error::No CHANGELOG.md section found for version ${version}."
+            echo "::error::Add a CHANGELOG.md section for ${version} first (format: '## [${version}] — YYYY-MM-DD')."
+            exit 1
+          fi
+
+          echo "Extracted $(printf '%s\n' "${notes}" | wc -l) lines of release notes."
+
+          # Emit as a multi-line GITHUB_OUTPUT value using a random delimiter.
+          delimiter="EOF_$(openssl rand -hex 8)"
+          {
+            echo "notes<<${delimiter}"
+            printf '%s\n' "${notes}"
+            echo "${delimiter}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Collect diagram assets (if rendered)
+        id: assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidates=(
+            "diagrams/aws-architecture.png"
+            "diagrams/aws-architecture.svg"
+            "diagrams/framework-structure.png"
+            "diagrams/framework-structure.svg"
+          )
+
+          found=()
+          for path in "${candidates[@]}"; do
+            if [[ -f "${path}" ]]; then
+              echo "Including asset: ${path}"
+              found+=("${path}")
+            else
+              echo "Skipping missing asset: ${path}"
+            fi
+          done
+
+          if [[ "${#found[@]}" -eq 0 ]]; then
+            echo "files=" >> "${GITHUB_OUTPUT}"
+          else
+            # Newline-separated list is what action-gh-release expects.
+            {
+              echo "files<<EOF_ASSETS"
+              printf '%s\n' "${found[@]}"
+              echo "EOF_ASSETS"
+            } >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.validate.outputs.tag }}
+          name: Solidus FinOps v${{ steps.validate.outputs.version }}
+          body: ${{ steps.changelog.outputs.notes }}
+          draft: false
+          prerelease: ${{ steps.validate.outputs.is_prerelease == 'true' }}
+          fail_on_unmatched_files: false
+          files: ${{ steps.assets.outputs.files }}

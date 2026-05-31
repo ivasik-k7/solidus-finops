@@ -1,0 +1,169 @@
+name: drift-check
+
+# Scheduled "did the world break overnight?" guard for Solidus FinOps.
+#
+# This workflow does NOT perform infrastructure drift detection — that would
+# require AWS credentials and a real backend, neither of which CI has. What
+# it does catch is *dependency-version drift*:
+#
+#   - A transitive provider release that breaks `terraform validate`.
+#   - A tflint plugin update that rejects previously-clean HCL.
+#   - A Python 3.12 stdlib regression that breaks `compileall` on Lambda src.
+#   - A formatting drift introduced by a tooling upgrade between PRs.
+#
+# Running this weekly (Monday 06:00 UTC, before the work week starts) means
+# any silent breakage gets surfaced as a GitHub issue before contributors
+# discover it the hard way on their next PR. The job is also exposed via
+# workflow_dispatch so maintainers can re-run on demand after Dependabot PRs.
+#
+# On failure the workflow opens (or comments on the first existing open)
+# issue labeled `drift,ci` so we don't spam the tracker with one issue per
+# week — a stale issue gets fresh context appended until it's closed.
+
+on:
+  schedule:
+    # Monday 06:00 UTC. cron is UTC on GitHub-hosted runners.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: drift-check-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: verify (${{ matrix.path }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        path:
+          - "."
+          - "examples/minimal"
+          - "examples/selective"
+          - "examples/production"
+          - "examples/cloudability-complement"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
+          terraform_wrapper: false
+
+      - name: terraform fmt (root only)
+        if: matrix.path == '.'
+        run: terraform fmt -check -recursive
+
+      - name: terraform init (no backend)
+        working-directory: ${{ matrix.path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform init -backend=false -input=false -no-color
+
+      - name: terraform validate
+        working-directory: ${{ matrix.path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform validate -no-color
+
+      - name: Setup tflint (root only)
+        if: matrix.path == '.'
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: latest
+
+      - name: tflint --recursive (root only)
+        if: matrix.path == '.'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tflint --init
+          tflint --recursive --format compact
+
+      - name: Setup Python (root only)
+        if: matrix.path == '.'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: python compileall modules/ (root only)
+        if: matrix.path == '.'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q modules/
+
+  report-failure:
+    name: report drift to issue tracker
+    needs: verify
+    if: ${{ failure() && github.event_name == 'schedule' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open or update drift issue
+        uses: actions/github-script@v7
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            const today = new Date().toISOString().slice(0, 10);
+            const runUrl = process.env.RUN_URL;
+            const title  = `CI drift: scheduled validate failed ${today}`;
+            const body = [
+              `The weekly drift-check workflow failed on \`${github.context.sha.slice(0, 7)}\`.`,
+              ``,
+              `**Run:** ${runUrl}`,
+              ``,
+              `One or more matrix entries failed \`terraform validate\`, \`tflint\`,`,
+              `\`terraform fmt\`, or \`python -m compileall\`. Because CI has no AWS`,
+              `credentials this is *not* infrastructure drift — it is almost`,
+              `certainly a transitive provider, tflint plugin, or Python toolchain`,
+              `update that needs pinning or accommodating.`,
+              ``,
+              `See the failed matrix legs in the run log linked above for which`,
+              `path (root or which \`examples/*\`) tripped the failure.`,
+              ``,
+              `_Filed automatically by \`.github/workflows/drift-check.yml\`._`,
+            ].join("\n");
+
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: "drift",
+              per_page: 100,
+            });
+
+            if (existing.data.length > 0) {
+              const target = existing.data[0];
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: target.number,
+                body: `Another drift-check run failed on ${today}.\n\n**Run:** ${runUrl}`,
+              });
+              core.info(`Commented on existing drift issue #${target.number}`);
+              return;
+            }
+
+            const created = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ["drift", "ci"],
+            });
+            core.info(`Opened drift issue #${created.data.number}`);
