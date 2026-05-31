@@ -32,18 +32,19 @@
 #     nothing to compile in modules/*/lambda/*.py.
 #
 # Action pinning policy:
-#   - aquasecurity/trivy-action is pinned to @master because that is the
-#     ref documented by the upstream README and the project does not
-#     publish a stable standalone semver tag scheme (older tags like
-#     "0.24.0" no longer resolve; recent releases use a "v"-prefix such
-#     as v0.36.0 but the upstream guidance is still @master). Dependabot
-#     and OpenSSF Scorecard still emit advisories against this ref.
-#     Hardening path: replace @master with a full-length commit SHA
-#     (see https://github.com/aquasecurity/trivy-action/commits/master)
-#     and let Dependabot bump it. Required for orgs that mandate
-#     immutable action refs (e.g. CIS GHA benchmark, SLSA L3).
-#   - All other actions are pinned to their current stable major tag
-#     (v3 / v4 / v2) which is the GitHub-recommended default.
+#   - Every action is pinned to a full-length 40-character commit SHA
+#     (immutable), with a trailing comment carrying the human-readable
+#     semver — this satisfies OpenSSF Scorecard's "Pinned-Dependencies"
+#     heuristic and keeps Dependabot's version-recognition intact.
+#   - aquasecurity/trivy-action remains on @master because that is the
+#     ref documented by upstream and the project does not publish a stable
+#     standalone semver tag scheme (older tags like "0.24.0" no longer
+#     resolve; recent releases use a "v"-prefix such as v0.36.0 but the
+#     upstream guidance is still @master). Hardening path: replace @master
+#     with a full-length commit SHA from
+#     https://github.com/aquasecurity/trivy-action/commits/master and let
+#     Dependabot bump it. Required for orgs that mandate immutable action
+#     refs (e.g. CIS GHA benchmark, SLSA L3).
 # =============================================================================
 
 name: security
@@ -88,13 +89,14 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
 
       # aquasecurity/trivy-action is pinned to @master per upstream README
       # guidance: the action does not publish a reliable standalone semver
-      # tag scheme (the previous "0.24.0" pin was hallucinated and does not
-      # resolve). To harden: replace @master with a full-length commit SHA
-      # from https://github.com/aquasecurity/trivy-action/commits/master
+      # tag scheme. To harden: replace @master with a full-length commit
+      # SHA from https://github.com/aquasecurity/trivy-action/commits/master
       # and let Dependabot bump it on a schedule.
       - name: Run Trivy filesystem scan
         uses: aquasecurity/trivy-action@master
@@ -111,7 +113,7 @@ jobs:
         # Always upload, even on Trivy failure, so findings show up in the
         # Security tab for triage instead of being lost with the failed run.
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@ea9e4e37992a54ee68a9622e985e60c8e8f12d9f  # v3.27.5
         with:
           sarif_file: "trivy-results.sarif"
           category: "trivy-fs"
@@ -128,12 +130,13 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout full history
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Run Gitleaks
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7  # v2.3.7
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # GITLEAKS_LICENSE is free for public OSS repos (this one is
@@ -158,15 +161,17 @@ jobs:
         language: ["python"]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@ea9e4e37992a54ee68a9622e985e60c8e8f12d9f  # v3.27.5
         with:
           languages: ${{ matrix.language }}
           build-mode: "none"
 
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@ea9e4e37992a54ee68a9622e985e60c8e8f12d9f  # v3.27.5
         with:
           category: "/language:${{ matrix.language }}"

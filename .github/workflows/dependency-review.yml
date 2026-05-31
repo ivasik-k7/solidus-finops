@@ -19,6 +19,12 @@ name: dependency-review
 # reviewers can see exactly what changed without digging into the Actions logs.
 # Snapshot warnings (race between Dependabot/Renovate and the review run) are
 # retried automatically rather than failing the check spuriously.
+#
+# Action pinning:
+#   Every `uses:` is pinned to a full-length 40-char commit SHA, with the
+#   trailing comment giving the human-readable semver. Tags are mutable;
+#   SHAs are not — this satisfies OpenSSF Scorecard's Pinned-Dependencies
+#   heuristic.
 
 on:
   pull_request:
@@ -51,10 +57,12 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout PR head
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Dependency Review
-        uses: actions/dependency-review-action@v4
+        uses: actions/dependency-review-action@4081bf99e2866ebe428fc0477b69eb4fcda7220a  # v4.5.0
         with:
           fail-on-severity: high
           allow-licenses: 'MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, MPL-2.0, 0BSD'

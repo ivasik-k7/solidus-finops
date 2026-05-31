@@ -20,13 +20,27 @@
 #      is the contract, not an afterthought.
 #   3. Attaches rendered architecture/structure diagrams as release assets
 #      when present, so consumers can grab the SVG/PNG without cloning.
-#   4. Publishes the release via softprops/action-gh-release@v2.
+#   4. Publishes the release via softprops/action-gh-release.
+#   5. Generates SLSA build-provenance attestations (Sigstore/cosign keyless
+#      via the runner's OIDC token) for every release asset, so downstream
+#      consumers can verify the artifacts were built by THIS workflow on
+#      THIS repo at THIS tag. Lifts OpenSSF Scorecard's "Signed-Releases"
+#      heuristic and gets us most of the way to SLSA Build L3.
 #
 # Why this matters for FinOps consumers
 # -------------------------------------
 # Solidus FinOps is consumed as pinned Terraform module refs. Downstream
 # users diff release notes to decide whether a bump is safe — so the release
 # body must be authoritative and the tag must be reproducibly verifiable.
+# Sigstore provenance turns "we promise this is what we shipped" into a
+# cryptographic statement verifiable with `gh attestation verify`.
+#
+# Action pinning
+# --------------
+# Every `uses:` is pinned to a full-length 40-character commit SHA, with a
+# trailing comment giving the human-readable semver. Tags are mutable and
+# can be force-pushed by an action's maintainer; SHAs cannot. This is
+# what OpenSSF Scorecard's "Pinned-Dependencies" heuristic requires.
 # ---------------------------------------------------------------------------
 
 name: release
@@ -36,6 +50,10 @@ on:
     tags:
       - 'v*.*.*'
 
+# Top-level: least privilege. The release job elevates contents:write to
+# publish the GitHub Release, id-token:write so attest-build-provenance can
+# request an OIDC token from Sigstore's Fulcio, and attestations:write to
+# record the resulting provenance statement on the repository.
 permissions:
   contents: read
 
@@ -45,12 +63,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      # Needed by softprops/action-gh-release to publish the Release.
       contents: write
+      # Needed by actions/attest-build-provenance to mint a short-lived
+      # OIDC token for keyless Sigstore signing (Fulcio + Rekor).
+      id-token: write
+      # Needed by actions/attest-build-provenance to write the resulting
+      # provenance statement into the repository's attestations store.
+      attestations: write
     steps:
       - name: Checkout repository at tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Validate tag is strict semver
         id: validate
@@ -167,7 +193,7 @@ jobs:
           fi
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@e7a8f85e1c67a31e6ed99a94b41bd0b71bbee6b8  # v2.0.9
         with:
           tag_name: ${{ steps.validate.outputs.tag }}
           name: Solidus FinOps v${{ steps.validate.outputs.version }}
@@ -176,3 +202,25 @@ jobs:
           prerelease: ${{ steps.validate.outputs.is_prerelease == 'true' }}
           fail_on_unmatched_files: false
           files: ${{ steps.assets.outputs.files }}
+
+      # ---------------------------------------------------------------------
+      # SLSA build provenance — generate keyless Sigstore-signed attestations
+      # for every diagram asset attached to the release. The attestation
+      # binds the artifact's SHA-256 digest to:
+      #   - this exact workflow file at this exact commit
+      #   - the GitHub Actions runner identity (OIDC issuer)
+      #   - the triggering tag
+      # Downstream consumers verify with:
+      #   gh attestation verify <file> --repo ivasik-k7/solidus-finops
+      # The step is gated on `hashFiles(...)` so a tag without rendered
+      # diagrams still releases cleanly without a noisy failure.
+      # ---------------------------------------------------------------------
+      - name: Attest build provenance for release assets
+        if: hashFiles('diagrams/aws-architecture.png', 'diagrams/aws-architecture.svg', 'diagrams/framework-structure.png', 'diagrams/framework-structure.svg') != ''
+        uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d4ddd0acac0e9c0d0ba  # v1.4.4
+        with:
+          subject-path: |
+            diagrams/aws-architecture.png
+            diagrams/aws-architecture.svg
+            diagrams/framework-structure.png
+            diagrams/framework-structure.svg

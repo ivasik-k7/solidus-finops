@@ -30,6 +30,11 @@
 #   That promise only holds if the docs are accurate and complete. This
 #   workflow is the cheapest possible enforcement: it runs only on Markdown
 #   churn and the workflow file itself, so non-doc PRs are unaffected.
+#
+# Action pinning:
+#   Every `uses:` is pinned to a full 40-char commit SHA with a trailing
+#   semver comment — satisfies OpenSSF Scorecard's Pinned-Dependencies
+#   heuristic while keeping Dependabot's version-recognition intact.
 # ---------------------------------------------------------------------------
 
 name: docs-quality
@@ -62,10 +67,12 @@ jobs:
       contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Restore lychee cache
-        uses: actions/cache@v4
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57  # v4.2.0
         with:
           path: ~/.cache/lychee
           key: lychee-${{ runner.os }}-${{ github.sha }}
@@ -73,7 +80,7 @@ jobs:
             lychee-${{ runner.os }}-
 
       - name: Run lychee link checker
-        uses: lycheeverse/lychee-action@v2
+        uses: lycheeverse/lychee-action@2bb232618be239862e31382c5c0eaeba12e5e966  # v2.4.0
         with:
           args: --no-progress --max-concurrency 4 ./**/*.md README.md
           fail: true
@@ -86,7 +93,9 @@ jobs:
   #     contents: read
   #   steps:
   #     - name: Checkout repository
-  #       uses: actions/checkout@v4
+  #       uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+  #       with:
+  #         persist-credentials: false
 
   #     # Config lives at .markdownlint.json in the repo root. It's tuned for
   #     # this codebase's real-world docs (CHANGELOG.md uses Keep-a-Changelog
@@ -94,7 +103,7 @@ jobs:
   #     # footers use bare URLs, etc.). See the "_comment" field at the top of
   #     # that file for the full rationale.
   #     - name: Run markdownlint-cli2
-  #       uses: DavidAnson/markdownlint-cli2-action@v18
+  #       uses: DavidAnson/markdownlint-cli2-action@db43aef879112c3119a410d69f66701e0d530809  # v18.0.0
   #       with:
   #         config: .markdownlint.json
   #         globs: |

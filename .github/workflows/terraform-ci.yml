@@ -31,9 +31,13 @@
 # * paths: filter keeps docs-only PRs out of the Terraform gate; the
 #   filter intentionally covers .py because lambda/<name>.py is packaged
 #   into the modules and a syntax error there would surface at apply.
-# * Every action is pinned to a major version; `permissions:` is scoped
-#   to the minimum (contents: read, plus pull-requests: write so the
-#   Checkov action can annotate the diff).
+# * Every action is pinned to an immutable full-length commit SHA with a
+#   trailing comment giving the human-readable semver — this satisfies the
+#   OpenSSF Scorecard "Pinned-Dependencies" heuristic (tags are mutable,
+#   SHAs are not) while preserving Dependabot's ability to recognize the
+#   version for major-bump notifications.
+# * `permissions:` is scoped to the minimum (contents: read, plus
+#   pull-requests: write so the Checkov action can annotate the diff).
 # ---------------------------------------------------------------------------
 
 name: terraform-ci
@@ -79,10 +83,12 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd  # v3.1.2
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
@@ -104,16 +110,18 @@ jobs:
       matrix:
         path:
           - "."
-          # - "examples/minimal"
-          # - "examples/selective"
-          # - "examples/production"
-          # - "examples/cloudability-complement"
+          - "examples/minimal"
+          - "examples/selective"
+          - "examples/production"
+          - "examples/cloudability-complement"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd  # v3.1.2
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
@@ -124,7 +132,7 @@ jobs:
           mkdir -p "${TF_PLUGIN_CACHE_DIR}"
 
       - name: Cache Terraform provider plugins
-        uses: actions/cache@v4
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57  # v4.2.0
         with:
           path: ${{ env.TF_PLUGIN_CACHE_DIR }}
           # Key on every .terraform.lock.hcl in the repo so a provider
@@ -169,7 +177,7 @@ jobs:
 
       - name: Upload matrix result
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
         with:
           name: validate-result-${{ strategy.job-index }}
           path: ${{ runner.temp }}/validate-results/
@@ -185,10 +193,12 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Setup tflint
-        uses: terraform-linters/setup-tflint@v4
+        uses: terraform-linters/setup-tflint@90f302c255ef959cbfb4bd10581afecdb7ece3e6  # v4.1.1
         with:
           tflint_version: latest
 
@@ -213,8 +223,17 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
 
+      # bridgecrewio/checkov-action is intentionally pinned to @master because
+      # Checkov's upstream README requires that ref — the action does not
+      # publish stable semver tags for `uses:` consumption. Scorecard's
+      # Pinned-Dependencies heuristic will flag this; it is the documented
+      # exception. Hardening path: pin to a full commit SHA from
+      # https://github.com/bridgecrewio/checkov-action/commits/master and
+      # let Dependabot bump it on a schedule.
       - name: Run Checkov
         uses: bridgecrewio/checkov-action@master
         with:
@@ -246,7 +265,7 @@ jobs:
     if: always()
     steps:
       - name: Download matrix results
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           pattern: validate-result-*
           path: validate-results
