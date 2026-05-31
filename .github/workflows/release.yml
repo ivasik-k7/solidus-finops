@@ -4,43 +4,43 @@
 # Purpose
 # -------
 # When a maintainer pushes a semver tag (vX.Y.Z), this workflow cuts the
-# corresponding GitHub Release. It is the single source of truth for the
-# "what changed" surface seen by downstream consumers of the framework.
+# corresponding GitHub Release AND publishes a cryptographically verifiable
+# SLSA build-provenance attestation for the release artifacts.
 #
-# What it does
-# -------------
-#   1. Validates the tag is strict semver (vMAJOR.MINOR.PATCH). Pre-release
-#      suffixes (-alpha, -beta, -rc.N) are NOT accepted via this strict path;
-#      they are detected separately and marked as GitHub prereleases.
-#   2. Extracts the matching section from the root CHANGELOG.md. The repo's
-#      changelog follows Keep-a-Changelog with em-dash headers, e.g.
-#        ## [0.2.1] — 2026-05-30
-#      The section runs until the next "## [" header. If the section is
-#      missing, the job fails fast with an actionable message — the changelog
-#      is the contract, not an afterthought.
-#   3. Attaches rendered architecture/structure diagrams as release assets
-#      when present, so consumers can grab the SVG/PNG without cloning.
-#   4. Publishes the release via softprops/action-gh-release.
-#   5. Generates SLSA build-provenance attestations (Sigstore/cosign keyless
-#      via the runner's OIDC token) for every release asset, so downstream
-#      consumers can verify the artifacts were built by THIS workflow on
-#      THIS repo at THIS tag. Lifts OpenSSF Scorecard's "Signed-Releases"
-#      heuristic and gets us most of the way to SLSA Build L3.
+# Why this version changed
+# ------------------------
+# The previous version generated provenance with actions/attest-build-provenance,
+# which writes attestations to the repository ATTESTATION STORE (verified with
+# `gh attestation verify`). OpenSSF Scorecard's "Signed-Releases" check does NOT
+# read that store — it only scans the last few releases' ASSETS for files named
+# *.sig, *.asc, *.sigstore.json, *.intoto.jsonl, etc. So the old approach could
+# never satisfy the check, regardless of whether it ran. (It was also gated on
+# optional diagram files, so it frequently produced nothing at all.)
 #
-# Why this matters for FinOps consumers
-# -------------------------------------
-# Solidus FinOps is consumed as pinned Terraform module refs. Downstream
-# users diff release notes to decide whether a bump is safe — so the release
-# body must be authoritative and the tag must be reproducibly verifiable.
-# Sigstore provenance turns "we promise this is what we shipped" into a
-# cryptographic statement verifiable with `gh attestation verify`.
+# This version fixes that by:
+#   1. Building a deterministic source archive (the thing downstream FinOps
+#      consumers actually pin as a Terraform module ref). git archive is
+#      reproducible for a given commit and honors .gitattributes export-ignore.
+#   2. Publishing the GitHub Release with that archive (+ any rendered diagrams)
+#      as real, downloadable assets — not just the auto-generated source tarball,
+#      which Scorecard explicitly ignores.
+#   3. Generating genuine SLSA Build L3 provenance over those artifacts via the
+#      SLSA generic generator, which uploads a `*.intoto.jsonl` file as a release
+#      asset. THAT file is what flips Scorecard's Signed-Releases to the top tier.
+#
+# Downstream consumers verify with slsa-verifier:
+#   slsa-verifier verify-artifact solidus-finops-X.Y.Z.tar.gz \
+#     --provenance-path <name>.intoto.jsonl \
+#     --source-uri github.com/ivasik-k7/solidus-finops \
+#     --source-tag vX.Y.Z
 #
 # Action pinning
 # --------------
-# Every `uses:` is pinned to a full-length 40-character commit SHA, with a
-# trailing comment giving the human-readable semver. Tags are mutable and
-# can be force-pushed by an action's maintainer; SHAs cannot. This is
-# what OpenSSF Scorecard's "Pinned-Dependencies" heuristic requires.
+# Every `uses:` is pinned to a full-length 40-char commit SHA with a trailing
+# semver comment — EXCEPT the SLSA generator. The SLSA reusable workflow MUST be
+# referenced by a `@vX.Y.Z` tag (not a SHA, not a short tag): slsa-verifier
+# verifies the trusted builder by its ref, and pinning it by digest makes the
+# build fail. This is the one documented, intentional exception to SHA pinning.
 # ---------------------------------------------------------------------------
 
 name: release
@@ -50,10 +50,6 @@ on:
     tags:
       - 'v*.*.*'
 
-# Top-level: least privilege. The release job elevates contents:write to
-# publish the GitHub Release, id-token:write so attest-build-provenance can
-# request an OIDC token from Sigstore's Fulcio, and attestations:write to
-# record the resulting provenance statement on the repository.
 permissions:
   contents: read
 
@@ -63,14 +59,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      # Needed by softprops/action-gh-release to publish the Release.
       contents: write
-      # Needed by actions/attest-build-provenance to mint a short-lived
-      # OIDC token for keyless Sigstore signing (Fulcio + Rekor).
-      id-token: write
-      # Needed by actions/attest-build-provenance to write the resulting
-      # provenance statement into the repository's attestations store.
-      attestations: write
+    outputs:
+      tag: ${{ steps.validate.outputs.tag }}
+      version: ${{ steps.validate.outputs.version }}
+      is_prerelease: ${{ steps.validate.outputs.is_prerelease }}
+      # base64(sha256sum of all release artifacts) — fed to the SLSA generator.
+      hashes: ${{ steps.hash.outputs.hashes }}
     steps:
       - name: Checkout repository at tag
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
@@ -87,8 +82,7 @@ jobs:
           echo "Tag pushed: ${tag_ref}"
 
           # Strict release tag: vMAJOR.MINOR.PATCH only.
-          # Pre-release tags (e.g. v0.3.0-rc.1) are handled by the prerelease
-          # sniffer below and use a relaxed pattern.
+          # Pre-release tags (e.g. v0.3.0-rc.1) use the relaxed pattern below.
           strict_re='^v[0-9]+\.[0-9]+\.[0-9]+$'
           prerelease_re='^v[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc)(\.[0-9]+)?$'
 
@@ -102,7 +96,6 @@ jobs:
             exit 1
           fi
 
-          # Strip leading 'v' to get the changelog key.
           version="${tag_ref#v}"
 
           {
@@ -126,9 +119,8 @@ jobs:
             exit 1
           fi
 
-          # Awk extracts lines between '## [X.Y.Z]' and the next '## [' header.
-          # The CHANGELOG uses an em-dash (U+2014) in section headers; we match
-          # on the bracketed version only, which is unambiguous and dash-agnostic.
+          # Extract lines between '## [X.Y.Z]' and the next '## [' header.
+          # Matches on the bracketed version only, so it is em-dash agnostic.
           notes="$(
             awk -v ver="${version}" '
               BEGIN { capture = 0 }
@@ -140,7 +132,7 @@ jobs:
             ' "${changelog_path}"
           )"
 
-          # Trim leading/trailing blank lines without disturbing internal blanks.
+          # Trim leading/trailing blank lines, preserving internal blanks.
           notes="$(printf '%s\n' "${notes}" | awk 'NF { found = 1 } found { print }' | tac | awk 'NF { found = 1 } found { print }' | tac)"
 
           if [[ -z "${notes}" ]]; then
@@ -151,13 +143,33 @@ jobs:
 
           echo "Extracted $(printf '%s\n' "${notes}" | wc -l) lines of release notes."
 
-          # Emit as a multi-line GITHUB_OUTPUT value using a random delimiter.
           delimiter="EOF_$(openssl rand -hex 8)"
           {
             echo "notes<<${delimiter}"
             printf '%s\n' "${notes}"
             echo "${delimiter}"
           } >> "${GITHUB_OUTPUT}"
+
+      - name: Build reproducible source archive
+        id: archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.validate.outputs.version }}"
+          name="solidus-finops-${version}"
+          archive="${name}.tar.gz"
+
+          # Deterministic archive of the tracked source at this exact commit.
+          # This is the artifact consumers pin and verify — not the runner's
+          # working tree, and not GitHub's auto-generated (and Scorecard-ignored)
+          # source tarball.
+          git archive --format=tar.gz \
+            --prefix="${name}/" \
+            -o "${archive}" \
+            HEAD
+
+          echo "archive=${archive}" >> "${GITHUB_OUTPUT}"
+          echo "Built ${archive} ($(du -h "${archive}" | cut -f1))"
 
       - name: Collect diagram assets (if rendered)
         id: assets
@@ -184,13 +196,33 @@ jobs:
           if [[ "${#found[@]}" -eq 0 ]]; then
             echo "files=" >> "${GITHUB_OUTPUT}"
           else
-            # Newline-separated list is what action-gh-release expects.
             {
               echo "files<<EOF_ASSETS"
               printf '%s\n' "${found[@]}"
               echo "EOF_ASSETS"
             } >> "${GITHUB_OUTPUT}"
           fi
+
+      - name: Compute SLSA subject digests
+        id: hash
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Subjects = the source archive plus any rendered diagrams. The SLSA
+          # generator signs provenance binding each of these SHA-256 digests to
+          # this workflow at this tag.
+          subjects=( "${{ steps.archive.outputs.archive }}" )
+          for d in \
+            "diagrams/aws-architecture.png" \
+            "diagrams/aws-architecture.svg" \
+            "diagrams/framework-structure.png" \
+            "diagrams/framework-structure.svg"; do
+            [[ -f "${d}" ]] && subjects+=( "${d}" )
+          done
+
+          hashes="$(sha256sum "${subjects[@]}" | base64 -w0)"
+          echo "hashes=${hashes}" >> "${GITHUB_OUTPUT}"
+          echo "Hashed subjects: ${subjects[*]}"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@e7a8f85e1c67a31e6ed99a94b41bd0b71bbee6b8  # v2.0.9
@@ -201,26 +233,34 @@ jobs:
           draft: false
           prerelease: ${{ steps.validate.outputs.is_prerelease == 'true' }}
           fail_on_unmatched_files: false
-          files: ${{ steps.assets.outputs.files }}
+          files: |
+            ${{ steps.archive.outputs.archive }}
+            ${{ steps.assets.outputs.files }}
 
-      # ---------------------------------------------------------------------
-      # SLSA build provenance — generate keyless Sigstore-signed attestations
-      # for every diagram asset attached to the release. The attestation
-      # binds the artifact's SHA-256 digest to:
-      #   - this exact workflow file at this exact commit
-      #   - the GitHub Actions runner identity (OIDC issuer)
-      #   - the triggering tag
-      # Downstream consumers verify with:
-      #   gh attestation verify <file> --repo ivasik-k7/solidus-finops
-      # The step is gated on `hashFiles(...)` so a tag without rendered
-      # diagrams still releases cleanly without a noisy failure.
-      # ---------------------------------------------------------------------
-      - name: Attest build provenance for release assets
-        if: hashFiles('diagrams/aws-architecture.png', 'diagrams/aws-architecture.svg', 'diagrams/framework-structure.png', 'diagrams/framework-structure.svg') != ''
-        uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d4ddd0acac0e9c0d0ba  # v1.4.4
-        with:
-          subject-path: |
-            diagrams/aws-architecture.png
-            diagrams/aws-architecture.svg
-            diagrams/framework-structure.png
-            diagrams/framework-structure.svg
+  # -------------------------------------------------------------------------
+  # SLSA Build L3 provenance.
+  #
+  # This job calls the SLSA generic generator as a REUSABLE WORKFLOW. It signs
+  # provenance for the digests produced above (keyless Sigstore via the runner's
+  # OIDC token, logged to Rekor) and, with upload-assets, attaches the resulting
+  # `*.intoto.jsonl` to the release for this tag. That asset is what OpenSSF
+  # Scorecard's Signed-Releases check detects.
+  #
+  # NOTE THE PINNING EXCEPTION: this `uses:` is intentionally pinned to a
+  # version TAG (@v2.1.0), not a commit SHA. The SLSA framework requires it so
+  # the trusted builder's ref can be verified by slsa-verifier; a SHA pin will
+  # fail the build. Do not "fix" this to a SHA. Bump the tag via Renovate's SLSA
+  # preset rather than Dependabot SHA bumps.
+  # -------------------------------------------------------------------------
+  provenance:
+    name: Generate SLSA provenance
+    needs: [release]
+    permissions:
+      actions: read       # To read the workflow path for provenance.
+      id-token: write     # To mint the OIDC token for keyless signing.
+      contents: write     # To upload the provenance asset to the release.
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.release.outputs.hashes }}
+      upload-assets: true
+      upload-tag-name: ${{ needs.release.outputs.tag }}
