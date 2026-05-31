@@ -66,7 +66,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           # Scorecard does not need write credentials; dropping them prevents
           # any downstream step from accidentally pushing to the repo.
