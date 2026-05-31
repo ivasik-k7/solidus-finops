@@ -88,7 +88,7 @@ jobs:
         # Pinned to v2.4.0 — see ACTION VERSION PIN note at top of file.
         # Upstream does not ship a 'v2' floating tag, so a bare major fails
         # to resolve at runtime with "unable to find version v2".
-        uses: ossf/scorecard-action@v2.4.0
+        uses: ossf/scorecard-action@v2.4.3
         with:
           results_file: results.sarif
           results_format: sarif
